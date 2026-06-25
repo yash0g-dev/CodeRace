@@ -3,7 +3,7 @@ import path from "path";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 
-dotenv.config();
+dotenv.config({ path: '../.env' });
 
 console.log("🚀 Starting CodeRace Mass Ingestion Pipeline...");
 
@@ -13,49 +13,54 @@ const supabaseKey = process.env.SUPABASE_SECRET_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // --- SOURCE DEFINITIONS ---
-const problemsDirectory = "../leetcode-problems/problems/";
+const problemsDirectory = "../leetcode-problems-master/problems/";
+
+// 🔥 100% UNIVERSAL MAP (Synced with Harness)
+const universalTypeMap = {
+  int: "integer", "long long": "long", double: "float", string: "string", bool: "boolean", char: "character",
+  "vector<int>": "integer[]", "vector<long long>": "long[]", "vector<char>": "character[]", "vector<string>": "string[]",
+  "vector<vector<int>>": "integer[][]", "vector<vector<char>>": "character[][]", "vector<vector<string>>": "string[][]",
+  "ListNode*": "linked_list", "TreeNode*": "binary_tree", "GraphNode*": "graph", "DLLNode*": "dll", 
+  "NaryNode*": "nary_tree", "RandomNode*": "random_list", "pair<int, int>": "int_pair", "pair<int,int>": "int_pair",
+  // TypeScript Equivalents
+  number: "integer", "number[]": "integer[]", "number[][]": "integer[][]",
+  boolean: "boolean", "boolean[]": "boolean[]",
+  "string[]": "string[]", "string[][]": "string[][]",
+  "ListNode | null": "linked_list", "TreeNode | null": "binary_tree",
+  void: "void"
+};
+
+const normalizeType = (typeStr) => typeStr ? typeStr.trim().replace(/\s*\*\s*/g, "*").replace(/\s*&\s*/g, "&") : "";
+const getCanonicalType = (rawType) => {
+  if (!rawType) return "void";
+  let clean = rawType.replace(/&/g, "").trim(); 
+  return universalTypeMap[clean] || universalTypeMap[rawType] || clean;
+};
 
 // ==========================================
 // 1. THE C++ PARSER (PRIMARY SOURCE OF TRUTH)
 // ==========================================
-const cppTypeMap = {
-  int: "integer",
-  "long long": "long",
-  long: "long",
-  "vector<int>": "integer[]",
-  "vector<int>&": "integer[]",
-  "vector<long long>": "long[]",
-  "vector<long long>&": "long[]",
-  "vector<vector<int>>": "integer[][]",
-  "vector<vector<int>>&": "integer[][]",
-  "vector<vector<long long>>": "long[][]",
-  "vector<vector<long long>>&": "long[][]",
-  string: "string",
-  "string&": "string",
-  "vector<string>": "string[]",
-  "vector<string>&": "string[]",
-  bool: "boolean",
-  char: "character",
-  "ListNode*": "linked_list",
-  "TreeNode*": "binary_tree",
-};
-
 const extractFromCPP = (cppSnippet) => {
   let className = "Solution";
-  const classMatch = cppSnippet.match(/class\s+([a-zA-Z0-9_]+)/);
+  
+  // 🔥 SAFEGUARD 1: Atomic comment stripping. Eliminates structural notes completely.
+  const cleanSnippet = cppSnippet
+    .replace(/\/\*[\s\S]*?\*\//g, "") // Strips block comments
+    .replace(/\/\/.*/g, ""); // Strips trailing inline comments
+
+  const classMatch = cleanSnippet.match(/class\s+([a-zA-Z0-9_]+)/);
   if (classMatch) {
     className = classMatch[1];
   }
 
-  // 🔥 SAFEGUARD 1: Atomic comment stripping. Eliminates structural notes completely.
-  const cleanSnippet = cppSnippet
-    .replace(/\/\*[\s\S]*?\*\//g, "") // Strips block comments /* ... */
-    .replace(/\/\/.*/g, ""); // Strips trailing inline comments // ...
+  // 🔥 SAFEGUARD 2: Isolate public block to avoid matching private helpers or internal structs
+  const publicSection = cleanSnippet.split(/public\s*:/)[1] || cleanSnippet;
 
-  // 🔥 SAFEGUARD 2: Strict multi-word declaration signature matcher
-  const match = cleanSnippet.match(/([\w<>&:]+)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
+  // 🔥 SAFEGUARD 3: Strict signature matcher synced with harness (captures return type)
+  const match = publicSection.match(/([\w<>&:* \t]+?)\s+(\w+)\s*\(([^)]*)\)\s*\{/);
   if (!match) return null;
 
+  const rawReturnType = match[1];
   const functionName = match[2];
   const argsString = match[3];
   const parameters = [];
@@ -65,9 +70,9 @@ const extractFromCPP = (cppSnippet) => {
     for (const arg of rawArgs) {
       const parts = arg.split(/\s+/);
       let name = parts.pop();
-      let rawType = parts.join("").trim();
+      let rawType = parts.join(" ").trim();
 
-      // 🔥 SAFEGUARD 3: Pointer alignment re-balancer (Fixes "TreeNode *root" spacing anomaly)
+      // Pointer alignment re-balancer
       if (name.startsWith("*")) {
         name = name.slice(1);
         rawType += "*";
@@ -79,57 +84,60 @@ const extractFromCPP = (cppSnippet) => {
 
       parameters.push({
         name: name,
-        type: cppTypeMap[rawType] || rawType,
+        type: getCanonicalType(normalizeType(rawType)),
       });
     }
   }
-  return { class_name: className, function_name: functionName, parameters };
+  
+  return { 
+    class_name: className, 
+    function_name: functionName, 
+    return_type: getCanonicalType(normalizeType(rawReturnType)),
+    parameters 
+  };
 };
 
 // ==========================================
 // 2. THE TYPESCRIPT PARSER (THE BACKUP)
 // ==========================================
-const tsTypeMap = {
-  number: "integer",
-  "number[]": "integer[]",
-  "number[][]": "integer[][]",
-  string: "string",
-  "string[]": "string[]",
-  "string[][]": "string[][]",
-  boolean: "boolean",
-  "boolean[]": "boolean[]",
-  character: "character",
-  "character[]": "character[]",
-  "character[][]": "character[][]",
-  "ListNode | null": "linked_list",
-  "TreeNode | null": "binary_tree",
-};
-
 const extractFromTS = (tsSnippet) => {
+  // Strip comments first to prevent false matches
+  const cleanSnippet = tsSnippet
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*/g, "");
+
   let className = "Solution";
-  const classMatch = tsSnippet.match(/class\s+([a-zA-Z0-9_]+)/);
+  const classMatch = cleanSnippet.match(/class\s+([a-zA-Z0-9_]+)/);
   if (classMatch) {
     className = classMatch[1];
   }
 
-  const funcMatch = tsSnippet.match(/function\s+([a-zA-Z0-9_]+)\s*\(/);
+  // Match function name, args, and optional return type before the opening brace
+  const funcMatch = cleanSnippet.match(/function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([\w\[\]\s\|<>]+))?\s*\{/);
   if (!funcMatch) return null;
 
   const functionName = funcMatch[1];
-  const argsMatch = tsSnippet.match(/\(([^)]+)\)/);
+  const argsString = funcMatch[2];
+  const rawReturnType = funcMatch[3] || "void";
   const parameters = [];
 
-  if (argsMatch && argsMatch[1].trim()) {
-    const rawArgs = argsMatch[1].split(",").map((arg) => arg.trim());
+  if (argsString && argsString.trim()) {
+    const rawArgs = argsString.split(",").map((arg) => arg.trim());
     for (const arg of rawArgs) {
       const [name, rawType] = arg.split(":").map((str) => str.trim());
       parameters.push({
         name: name,
-        type: tsTypeMap[rawType] || rawType,
+        type: getCanonicalType(rawType),
       });
     }
   }
-  return { class_name: className, function_name: functionName, parameters };
+  
+  return { 
+    class_name: className, 
+    function_name: functionName, 
+    return_type: getCanonicalType(rawReturnType),
+    parameters 
+  };
 };
 
 // ==========================================
@@ -137,18 +145,14 @@ const extractFromTS = (tsSnippet) => {
 // ==========================================
 const runIngestion = async () => {
   if (!fs.existsSync(problemsDirectory)) {
-    return console.error(
-      `❌ Target processing folder ${problemsDirectory} not found!`,
-    );
+    return console.error(`❌ Target processing folder ${problemsDirectory} not found!`);
   }
 
   const files = fs
     .readdirSync(problemsDirectory)
     .filter((file) => file.endsWith(".json"));
 
-  console.log(
-    `Found ${files.length} problem files. Uploading pipeline active...\n`,
-  );
+  console.log(`Found ${files.length} problem files. Uploading pipeline active...\n`);
 
   let successCount = 0;
 
@@ -168,32 +172,24 @@ const runIngestion = async () => {
         problemMetadata = extractFromTS(snippets.typescript);
       }
 
-      // Safe fallback if parsing fails (Design problems, SQL environments, etc.)
+      // Safe fallback if parsing fails
       if (!problemMetadata) {
         problemMetadata = {
           class_name: "Solution",
           function_name: "unknown",
+          return_type: "void",
           parameters: [],
         };
       }
 
-      const safeLeetcodeId = parseInt(
-        problem.problem_id || problem.frontend_id,
-      );
-      const safeSlug =
-        problem.problemSlug ||
-        problem.problem_slug ||
-        `problem-${safeLeetcodeId}`;
+      const safeLeetcodeId = parseInt(problem.problem_id || problem.frontend_id);
+      const safeSlug = problem.problemSlug || problem.problem_slug || `problem-${safeLeetcodeId}`;
 
       const dbRow = {
-        id: safeSlug, // Primary alphanumeric key identifier
+        id: safeSlug, 
         title: problem.title || "Untitled Problem",
-        difficulty: problem.difficulty
-          ? problem.difficulty.toLowerCase()
-          : "medium",
-        description:
-          problem.description ||
-          "Description not available locally. Please view on LeetCode.",
+        difficulty: problem.difficulty ? problem.difficulty.toLowerCase() : "medium",
+        description: problem.description || "Description not available locally. Please view on LeetCode.",
         leetcode_id: safeLeetcodeId,
         likes: 0,
         dislikes: 0,
@@ -201,12 +197,11 @@ const runIngestion = async () => {
         examples: problem.examples || [],
         constraints: problem.constraints || [],
         hints: problem.hints || [],
-        metadata: problemMetadata, // Cleaned object payload mapping
+        metadata: problemMetadata, // Now includes return_type automatically
         code_snippets: snippets,
-        test_cases: problem.examples || [], // Seeds examples as active initial test suites
+        test_cases: problem.examples || [], 
       };
 
-      // Upsert execution transaction matching unique constraints
       const { error: dbError } = await supabase.from("problems").upsert(dbRow, {
         onConflict: "leetcode_id",
       });
@@ -214,19 +209,13 @@ const runIngestion = async () => {
       if (dbError) throw dbError;
 
       successCount++;
-      process.stdout.write(
-        `\r✅ Ingested: ${successCount}/${files.length} components `,
-      );
+      process.stdout.write(`\r✅ Ingested: ${successCount}/${files.length} components `);
     } catch (error) {
-      console.log(
-        `\n❌ Ingestion fault encountered on file [${files[i]}]: ${error.message}`,
-      );
+      console.log(`\n❌ Ingestion fault encountered on file [${files[i]}]: ${error.message}`);
     }
   }
 
-  console.log(
-    `\n\n🎉 Process ended. Successfully standardized and deployed ${successCount} total problems.`,
-  );
+  console.log(`\n\n🎉 Process ended. Successfully standardized and deployed ${successCount} total problems.`);
 };
 
 runIngestion();
