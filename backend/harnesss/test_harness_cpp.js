@@ -15,9 +15,9 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 // --- LOCAL CONFIGURATION ---
 const CONFIG = {
-  PROBLEM_ID: 283, // 283: Move Zeroes, 1192: Critical Connections, 1192: Critical Connections, 1192: Critical Connections
-  CPP_SOLUTION_FILE: "./cpp-problems/283.cpp", 
-  TEST_CASES_FILE: "./cpp-problems/283-tests.json",     
+  PROBLEM_ID: 42, // 283: Move Zeroes, 1192: Critical Connections, 1192: Critical Connections, 1192: Critical Connections
+  CPP_SOLUTION_FILE: "./cpp-problems/42.cpp", 
+  TEST_CASES_FILE: "./cpp-problems/42-tests.json",     
   ONECOMPILER_API_URL: "https://onecompiler-apis.p.rapidapi.com/api/v1/run",
   API_KEY: process.env.COMPILER_API_KEY ||  process.env.RAPIDAPI_KEY,
 };

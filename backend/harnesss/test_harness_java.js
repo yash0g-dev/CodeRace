@@ -15,9 +15,9 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 // --- LOCAL CONFIGURATION ---
 const CONFIG = {
-  PROBLEM_ID: 79, 
-  JAVA_SOLUTION_FILE: "./java-problems/79.java", 
-  TEST_CASES_FILE: "./java-problems/79-tests.json",     
+  PROBLEM_ID: 133, 
+  JAVA_SOLUTION_FILE: "./java-problems/133.java", 
+  TEST_CASES_FILE: "./java-problems/133-tests.json",     
   ONECOMPILER_API_URL: "https://onecompiler-apis.p.rapidapi.com/api/v1/run",
   API_KEY: process.env.COMPILER_API_KEY ||  process.env.RAPIDAPI_KEY,
 };

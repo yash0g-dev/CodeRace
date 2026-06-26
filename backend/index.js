@@ -1,13 +1,19 @@
-import userRoutes from './routes/user.route.js';
-import codeRoutes from './routes/code.route.js';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+import userRoutes from './routes/user.route.js';
+import codeRoutes from './routes/code.route.js';
 import { handleSocketConnection } from './controllers/socket.controller.js';
 
-dotenv.config({ path: './backend/.env' });
+// 1. Bulletproof path resolution for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 const app = express();
 const httpServer = createServer(app);
@@ -29,7 +35,7 @@ app.use(express.json());
 
 // Routes
 app.use('/api/code', codeRoutes);
-app.use('/api/users', userRoutes); // <-- Added this to serve the Leaderboard!
+app.use('/api/users', userRoutes); 
 
 // Sanity check route to ensure Express is working
 app.get('/api/health', (req, res) => {

@@ -1,337 +1,507 @@
-import { useState, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import Editor, { useMonaco } from '@monaco-editor/react';
 import { useSocket } from '../context/SocketContext.jsx';
+import axios from 'axios';
 
 const Race = () => {
   const { socket } = useSocket();
   const location = useLocation();
   const navigate = useNavigate();
+  const monaco = useMonaco();
   
+  // --- Routing State ---
   const roomId = location.state?.roomId || 'ERROR';
-  const difficulty = location.state?.difficulty || 'medium';
-  const matchType = location.state?.matchType || '1v1';
+  const difficulty = (location.state?.difficulty || 'medium').toLowerCase();
+  const initialCompany = location.state?.company || 'All';
+  const timeLimitMinutes = location.state?.timeLimit || 30; 
+  const isPractice = location.state?.isPractice || false;
 
-  // --- Handshake & Race State ---
-  const [hasClickedReady, setHasClickedReady] = useState(false);
+  // --- Core State ---
+  const [problem, setProblem] = useState(null);
+  const [examples, setExamples] = useState([]);
+  const [constraints, setConstraints] = useState([]);
+  const [companiesList, setCompaniesList] = useState([]);
+  const [snippetsCache, setSnippetsCache] = useState({});
+
+  const [hasClickedReady, setHasClickedReady] = useState(isPractice);
   const [countdown, setCountdown] = useState(null); 
-  const [raceStarted, setRaceStarted] = useState(false);
+  const [raceStarted, setRaceStarted] = useState(isPractice);
+  const [timeLeft, setTimeLeft] = useState(timeLimitMinutes * 60);
 
-  // --- Real-time Match State ---
   const [myProgress, setMyProgress] = useState(0);
+  const [totalCases, setTotalCases] = useState(5);
   const [opponentProgress, setOpponentProgress] = useState(0);
 
-  // --- Code Execution State ---
-  const [code, setCode] = useState("function twoSum(nums, target) {\n  // Write your code here\n}");
-  const [language, setLanguage] = useState('javascript');
+  // --- UI/Editor State ---
+  const [language, setLanguage] = useState('cpp');
+  const [code, setCode] = useState("// Waiting for problem...");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [terminalLogs, setTerminalLogs] = useState([]);
+  const [lastExecutionTime, setLastExecutionTime] = useState(null);
 
-  // --- UI State ---
-  const [leftTab, setLeftTab] = useState('problem'); 
-  const [bottomTab, setBottomTab] = useState('tc'); 
+  const [leftTab, setLeftTab] = useState('description'); 
+  const [bottomTab, setBottomTab] = useState('testcases'); 
   const [activeCase, setActiveCase] = useState(0);
-  const [activeHint, setActiveHint] = useState(null);
+  
+  const [isLangOpen, setIsLangOpen] = useState(false);
+  const [isCompaniesOpen, setIsCompaniesOpen] = useState(false);
 
-  const hints = [
-    "Think about what you need for each element — if you're at nums[i], what single value completes the pair?",
-    "Use a HashMap. Store each number as you go. For each element, check if its complement already exists in the map.",
-    "Edge case: what if the same number appears twice? e.g. [3,3] with target 6. Don't reuse the same index.",
-    "Current approach is O(n²). HashMap gives O(n) time and O(n) space — store value→index as you iterate."
-  ];
+  // --- Resizable Panes State ---
+  const [leftWidth, setLeftWidth] = useState(45); 
+  const [bottomHeight, setBottomHeight] = useState(35); 
+  const [isDragging, setIsDragging] = useState(null); 
 
+  // ==========================================
+  // 1. MONACO CUSTOM THEME
+  // ==========================================
+  useEffect(() => {
+    if (monaco) {
+      monaco.editor.defineTheme('codeRaceTheme', {
+        base: 'vs-dark',
+        inherit: true,
+        rules: [
+          { token: 'keyword', foreground: 'ff6b2b', fontStyle: 'bold' },
+          { token: 'type', foreground: '2cbb5d' },
+          { token: 'string', foreground: 'e5c07b' },
+          { token: 'comment', foreground: '5c6370', fontStyle: 'italic' },
+        ],
+        colors: {
+          'editor.background': '#0a0a0a',
+          'editor.lineHighlightBackground': '#161616',
+          'editorLineNumber.foreground': '#444444',
+          'editorIndentGuide.background': '#1e1e1e',
+        }
+      });
+    }
+  }, [monaco]);
+
+  // ==========================================
+  // 2. SOCKET & TIMER LISTENERS
+  // ==========================================
   useEffect(() => {
     if (!socket) return;
-    if (roomId === 'ERROR') {
-      navigate('/');
-      return;
-    }
+    if (roomId === 'ERROR' && !isPractice) { navigate('/'); return; }
 
-    // 1. Listen for the Countdown Signal once BOTH players click ready
+    socket.on('problem_data', (data) => {
+      setProblem(data);
+      if (data.examples) setExamples(typeof data.examples === 'string' ? JSON.parse(data.examples) : data.examples);
+      if (data.constraints) setConstraints(typeof data.constraints === 'string' ? JSON.parse(data.constraints) : data.constraints);
+      
+      let parsedCompanies = [];
+      if (data.companies) parsedCompanies = typeof data.companies === 'string' ? JSON.parse(data.companies) : data.companies;
+      if (parsedCompanies.length === 0 && initialCompany !== 'All') parsedCompanies = [initialCompany];
+      setCompaniesList(parsedCompanies);
+      
+      if (data.code_snippets) {
+        const snippets = typeof data.code_snippets === 'string' ? JSON.parse(data.code_snippets) : data.code_snippets;
+        setSnippetsCache(snippets);
+        const initialLang = snippets['cpp'] ? 'cpp' : 'java';
+        setLanguage(initialLang);
+        
+        const savedCode = localStorage.getItem(`coderace_${roomId}_${initialLang}`);
+        setCode(savedCode || snippets[initialLang] || '// Write your code here');
+      }
+    });
+
     socket.on('start_countdown', ({ seconds }) => {
       setCountdown(seconds);
       let count = seconds;
-      
-      const interval = setInterval(() => {
+      const int = setInterval(() => {
         count -= 1;
-        if (count > 0) {
-          setCountdown(count);
-        } else if (count === 0) {
-          setCountdown('GO!');
-        } else {
-          clearInterval(interval);
-          setCountdown(null);
-          setRaceStarted(true); // Unlock the editor!
-        }
+        if (count > 0) setCountdown(count);
+        else if (count === 0) setCountdown('GO!');
+        else { clearInterval(int); setCountdown(null); setRaceStarted(true); }
       }, 1000);
     });
 
-    // 2. Listen for progress updates & match over events
-    socket.on('opponent_progress', ({ progress }) => {
-      setOpponentProgress(progress);
-    });
-
+    socket.on('opponent_progress', ({ progress }) => setOpponentProgress(progress));
     socket.on('match_over', ({ winnerId }) => {
-      const didIWin = winnerId === socket.id;
-      navigate('/result', { state: { didIWin, myProgress, opponentProgress } });
-    });
-
-    // Handle case where opponent leaves during the handshake screen
-    socket.on('opponent_left_handshake', () => {
-      alert("Opponent left the match preparation screen.");
-      setHasClickedReady(false);
-      setCountdown(null);
+      navigate('/result', { state: { didIWin: winnerId === socket.id, myProgress, opponentProgress } });
     });
 
     return () => {
-      socket.off('start_countdown');
-      socket.off('opponent_progress');
-      socket.off('match_over');
-      socket.off('opponent_left_handshake');
+      socket.off('problem_data'); socket.off('start_countdown');
+      socket.off('opponent_progress'); socket.off('match_over');
     };
-  }, [socket, roomId, navigate, myProgress, opponentProgress]);
+  }, [socket, roomId, isPractice, navigate, initialCompany, myProgress, opponentProgress]);
 
-  // --- MANUAL CLICK HANDSHAKE LOGIC ---
-  const handleReadyClick = () => {
-    if (!socket) return;
-    setHasClickedReady(true);
-    // Tell the backend that THIS specific user is locked and ready
-    socket.emit('player_ready', { roomId });
+  useEffect(() => {
+    let timerInterval;
+    if (raceStarted && timeLeft > 0) {
+      timerInterval = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+    } else if (timeLeft === 0 && raceStarted) {
+      setTerminalLogs(prev => [...prev, `🚨 TIME UP! Match concluded.`]);
+      setIsSubmitting(true); 
+    }
+    return () => clearInterval(timerInterval);
+  }, [raceStarted, timeLeft]);
+
+  const formatTime = (seconds) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
   };
 
-  // --- REAL CODE SUBMISSION LOGIC ---
+  // ==========================================
+  // 3. EDITOR ACTIONS
+  // ==========================================
+  const handleLanguageSelect = (newLang) => {
+    setLanguage(newLang);
+    setIsLangOpen(false);
+    const savedCode = localStorage.getItem(`coderace_${roomId}_${newLang}`);
+    setCode(savedCode || snippetsCache[newLang] || '// Write your code here');
+  };
+
+  const handleCodeChange = (val) => {
+    setCode(val);
+    localStorage.setItem(`coderace_${roomId}_${language}`, val);
+  };
+
+  const handleResetCode = () => {
+    if (window.confirm("Reset code to original state? All changes will be lost.")) {
+      const originalCode = snippetsCache[language] || '// Write your code here';
+      setCode(originalCode);
+      localStorage.setItem(`coderace_${roomId}_${language}`, originalCode);
+    }
+  };
+
   const handleSubmitCode = async () => {
-    if (!socket || !raceStarted || isSubmitting) return;
-    
+    if (!socket || !raceStarted || isSubmitting || timeLeft === 0) return;
     setIsSubmitting(true);
-    setBottomTab('res'); 
+    setBottomTab('result');
+    setTerminalLogs(['> Initializing execution container...', '> Compiling source code...']);
     
     try {
-      const response = await fetch('http://localhost:5000/api/code/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          language: language, 
-          code: code,
-          problemId: 'two-sum',
-          roomId: roomId,
-          userId: socket.id
-        })
+      const { data } = await axios.post('http://localhost:5000/api/code/execute', {
+        language, code, problemId: problem?.id || 'two-sum', roomId, userId: socket.id
       });
 
-      const result = await response.json();
-      
-      if (result.success && result.passedCount >= 0) {
-        if (result.passedCount > myProgress) {
-          setMyProgress(result.passedCount);
-          socket.emit('progress_update', { roomId, progress: result.passedCount });
-          
-          if (result.allPassed) {
-            socket.emit('player_won', { roomId });
-          }
+      if (data.success) {
+        setTerminalLogs([`✅ Accepted`, `Execution Time: ${data.executionTimeMs}ms`, `Passed Cases: ${data.passedCount}/${data.totalCount}`]);
+        setTotalCases(data.totalCount);
+        if (data.passedCount > myProgress) {
+          setMyProgress(data.passedCount);
+          if (!isPractice) socket.emit('progress_update', { roomId, progress: data.passedCount });
         }
+        setLastExecutionTime(data.executionTimeMs);
       } else {
-        console.log("Execution failed or errors occurred:", result.error || result.details);
+        setTerminalLogs([`❌ Runtime Error`, data.error || data.details]);
       }
     } catch (error) {
-      console.error("Execution error:", error);
-      alert("Failed to run code on server. Is the backend running?");
+      setTerminalLogs([`🚨 Server Error: Could not reach execution engine.`]);
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  // ==========================================
+  // 4. BULLETPROOF RESIZER LOGIC
+  // ==========================================
+  const handleMouseMove = useCallback((e) => {
+    if (!isDragging) return;
+    if (isDragging === 'vertical') {
+      const newWidth = (e.clientX / window.innerWidth) * 100;
+      if (newWidth > 20 && newWidth < 80) setLeftWidth(newWidth);
+    } else if (isDragging === 'horizontal') {
+      const workspaceRect = document.getElementById('workspace-container').getBoundingClientRect();
+      const relativeY = e.clientY - workspaceRect.top;
+      const newHeight = ((workspaceRect.height - relativeY) / workspaceRect.height) * 100;
+      if (newHeight > 10 && newHeight < 85) setBottomHeight(newHeight);
+    }
+  }, [isDragging]);
+
+  const handleMouseUp = useCallback(() => setIsDragging(null), []);
+
+  useEffect(() => {
+    if (isDragging) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      document.body.style.userSelect = 'none';
+    } else {
+      document.body.style.userSelect = 'auto';
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, handleMouseMove, handleMouseUp]);
+
+  // ==========================================
+  // 5. THEME & COLORS
+  // ==========================================
+  const colors = {
+    bgApp: '#000000', bgPanel: '#0a0a0a', bgHeader: '#121212',
+    border: '#1e1e1e', borderHover: '#ff6b2b',
+    textMain: '#eff1f6', textMuted: '#6b7280',
+    accent: '#ff6b2b', success: '#2cbb5d', warning: '#ffc107', fail: '#ef4743'
+  };
+
+  const getDiffStyles = (diff) => {
+    if (diff === 'easy') return { color: colors.success, bg: '#2cbb5d15', border: '#2cbb5d40' };
+    if (diff === 'medium' || diff === 'med') return { color: colors.warning, bg: '#ffc10715', border: '#ffc10740' };
+    if (diff === 'hard') return { color: colors.fail, bg: '#ef474315', border: '#ef474340' };
+    return { color: colors.textMuted, bg: '#222', border: '#333' };
+  };
+  const diffStyles = getDiffStyles(difficulty);
+
+  const availableLanguages = [
+    { id: 'cpp', label: 'C++' },
+    { id: 'java', label: 'Java' },
+    { id: 'python', label: 'Python' }
+  ];
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, width: '100%', background: '#0a0a0a', overflow: 'hidden', position: 'relative' }}>
+    <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', background: colors.bgApp, color: colors.textMain, fontFamily: "'JetBrains Mono', 'Segoe UI', sans-serif", overflow: 'hidden' }}>
       
-      {/* THE MUTUAL READINESS & COUNTDOWN OVERLAY */}
-      {!raceStarted && (
-        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(10, 10, 10, 0.94)', backdropFilter: 'blur(8px)', zIndex: 100, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+      {isDragging && <div style={{ position: 'fixed', inset: 0, zIndex: 9999, cursor: isDragging === 'vertical' ? 'col-resize' : 'row-resize' }} />}
+
+      {/* HANDSHAKE OVERLAY */}
+      {!raceStarted && !isPractice && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(10px)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           {countdown !== null ? (
-             <div style={{ fontSize: countdown === 'GO!' ? '140px' : '180px', color: '#ff6b2b', fontWeight: '800', textShadow: '0 0 60px rgba(255, 107, 43, 0.5)', letterSpacing: '-2px' }}>
-               {countdown}
-             </div>
+             <div style={{ fontSize: countdown === 'GO!' ? '140px' : '180px', color: colors.accent, fontWeight: '900', textShadow: `0 0 60px ${colors.accent}66` }}>{countdown}</div>
           ) : (
-             <div style={{ textAlign: 'center', width: '340px' }}>
-                <h3 style={{ fontSize: '22px', fontWeight: '700', color: '#fff', marginBottom: '6px' }}>Arena Initialized</h3>
-                <p style={{ fontSize: '12px', color: '#555', marginBottom: '24px', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                  {matchType} // Difficulty: {difficulty}
-                </p>
-                
+             <div style={{ boxSizing: 'border-box', textAlign: 'center', width: '380px', background: colors.bgPanel, border: `1px solid ${colors.border}`, padding: '40px', borderRadius: '12px', boxShadow: '0 20px 50px rgba(0,0,0,0.8)' }}>
+                <h3 style={{ fontSize: '24px', fontWeight: '800', marginBottom: '8px' }}>Arena Ready</h3>
+                <p style={{ fontSize: '13px', color: colors.textMuted, marginBottom: '30px', textTransform: 'uppercase', letterSpacing: '1px' }}>Waiting for both players...</p>
                 {!hasClickedReady ? (
-                  <button className="btn-primary" style={{ width: '100%', padding: '14px', fontSize: '14px' }} onClick={handleReadyClick}>
-                    Ready to Race ⚡
-                  </button>
+                  <button onClick={() => { setHasClickedReady(true); socket?.emit('player_ready', { roomId }); }} style={{ width: '100%', padding: '16px', background: colors.accent, color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px' }}>Ready Up ⚡</button>
                 ) : (
-                  <div style={{ padding: '14px', background: '#0f0f0f', border: '1px solid #ff6b2b33', borderRadius: '8px', color: '#ff6b2b', fontSize: '13px', fontWeight: '600', animation: 'pulse 1.5s infinite opacity' }}>
-                    Waiting for other player to start...
-                  </div>
+                  <div style={{ padding: '16px', color: colors.accent, fontWeight: '600', animation: 'pulse 1.5s infinite', border: `1px solid ${colors.accent}44`, borderRadius: '8px', background: '#ff6b2b11' }}>Waiting for opponent...</div>
                 )}
              </div>
           )}
         </div>
       )}
       
-      {/* --- RACE NAV --- */}
-      <div style={{ padding: '10px 24px', borderBottom: '1px solid #1e1e1e', display: 'flex', alignItems: 'center', gap: '24px', background: '#0a0a0a', flexShrink: 0 }}>
-        <div style={{ fontSize: '16px', fontWeight: '700', color: '#fff', minWidth: '120px' }}>
-          Code<span style={{ color: '#ff6b2b' }}>Race</span> ..
-        </div>
+      {/* MATCH HUD - 3 Column Layout */}
+      <div style={{ boxSizing: 'border-box', height: '54px', borderBottom: `1px solid ${colors.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', background: colors.bgApp, flexShrink: 0, zIndex: 50 }}>
         
-        {/* LIVE PROGRESS BARS */}
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
-          <span style={{ fontSize: '12px', color: '#555', minWidth: '30px', textAlign: 'right' }}>You</span>
-          <div className="pbar-bg" style={{ maxWidth: '400px', width: '100%', background: '#161616', height: '4px', borderRadius: '99px', overflow: 'hidden' }}>
-            <div style={{ height: '100%', background: '#ff6b2b', width: `${(myProgress / 5) * 100}%`, transition: 'width 0.3s ease' }}></div>
+        {/* LEFT: PROGRESS */}
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '12px', color: colors.textMuted, fontWeight: '600' }}>You</span>
+            <div style={{ width: '100px', height: '4px', background: '#222', borderRadius: '99px', overflow: 'hidden' }}>
+              <div style={{ height: '100%', background: colors.accent, width: `${(myProgress / totalCases) * 100}%`, transition: 'width 0.3s ease' }}></div>
+            </div>
+            <span style={{ fontSize: '12px', color: colors.accent, fontWeight: '700' }}>{myProgress}</span>
           </div>
-          <span style={{ fontSize: '12px', color: '#ff6b2b', fontWeight: '600' }}>{myProgress}/5</span>
           
-          <span style={{ fontSize: '12px', color: '#444', margin: '0 12px', fontWeight: '700' }}>VS</span>
-          
-          <span style={{ fontSize: '12px', color: '#4caf50', fontWeight: '600' }}>{opponentProgress}/5</span>
-          <div className="pbar-bg" style={{ maxWidth: '400px', width: '100%', background: '#161616', height: '4px', borderRadius: '99px', overflow: 'hidden' }}>
-            <div style={{ height: '100%', background: '#4caf50', width: `${(opponentProgress / 5) * 100}%`, transition: 'width 0.3s ease' }}></div>
-          </div>
-          <span style={{ fontSize: '12px', color: '#555', minWidth: '40px' }}>Opponent</span>
+          {!isPractice && (
+            <>
+              <span style={{ fontSize: '12px', color: '#444', fontWeight: '900' }}>VS</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '12px', color: colors.success, fontWeight: '700' }}>{opponentProgress}</span>
+                <div style={{ width: '100px', height: '4px', background: '#222', borderRadius: '99px', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: colors.success, width: `${(opponentProgress / totalCases) * 100}%`, transition: 'width 0.3s ease' }}></div>
+                </div>
+                <span style={{ fontSize: '12px', color: colors.textMuted, fontWeight: '600' }}>Opponent</span>
+              </div>
+            </>
+          )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-          <div style={{ fontSize: '16px', color: '#f44336', fontWeight: '700', fontVariantNumeric: 'tabular-nums', letterSpacing: '1px' }}>12:33</div>
-          <select 
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            style={{ background: '#0f0f0f', border: '1px solid #1e1e1e', borderRadius: '6px', color: '#e8e8e8', fontSize: '12px', padding: '6px 12px', fontFamily: 'inherit', outline: 'none', cursor: 'pointer' }} 
-            disabled={!raceStarted}
+        {/* CENTER: PREMIUM ACTION BUTTONS */}
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px' }}>
+          {isSubmitting && <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: colors.accent, animation: 'pulse 1s infinite' }} />}
+          
+          <button 
+            disabled={!raceStarted || isSubmitting || timeLeft === 0} 
+            style={{ padding: '5px 14px', fontSize: '12px', background: '#1a1a1a', color: '#e8e8e8', border: `1px solid #333`, borderRadius: '6px', cursor: !raceStarted || isSubmitting || timeLeft===0 ? 'not-allowed' : 'pointer', fontWeight: '600', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '6px' }} 
+            onMouseOver={e => { e.currentTarget.style.background = '#2a2a2a'; e.currentTarget.style.borderColor = '#555'; }} 
+            onMouseOut={e => { e.currentTarget.style.background = '#1a1a1a'; e.currentTarget.style.borderColor = '#333'; }}
           >
-            <option value="javascript">javascript</option>
-            <option value="python">python</option>
-            <option value="cpp">cpp</option>
-            <option value="java">java</option>
-          </select>
+            <span style={{ fontSize: '10px', color: '#888' }}>▶</span> Run
+          </button>
+
+          <button 
+            onClick={handleSubmitCode} 
+            disabled={!raceStarted || isSubmitting || timeLeft === 0} 
+            style={{ padding: '5px 16px', fontSize: '12px', background: 'rgba(44, 187, 93, 0.1)', color: colors.success, border: `1px solid rgba(44, 187, 93, 0.3)`, borderRadius: '6px', opacity: raceStarted && timeLeft > 0 ? 1 : 0.5, cursor: isSubmitting || timeLeft===0 ? 'not-allowed' : 'pointer', fontWeight: '600', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '6px' }} 
+            onMouseOver={e => { e.currentTarget.style.background = 'rgba(44, 187, 93, 0.2)'; e.currentTarget.style.borderColor = 'rgba(44, 187, 93, 0.6)'; }} 
+            onMouseOut={e => { e.currentTarget.style.background = 'rgba(44, 187, 93, 0.1)'; e.currentTarget.style.borderColor = 'rgba(44, 187, 93, 0.3)'; }}
+          >
+            Submit
+          </button>
+        </div>
+
+        {/* RIGHT: TIMER & CONTROLS */}
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '24px' }}>
+          <div style={{ 
+            fontSize: '15px', fontWeight: '800', fontVariantNumeric: 'tabular-nums', letterSpacing: '1px',
+            color: timeLeft <= 60 ? colors.fail : colors.textMain,
+            animation: timeLeft <= 60 && timeLeft > 0 ? 'pulse 1s infinite' : 'none' 
+          }}>
+            {formatTime(timeLeft)}
+          </div>
+          <button onClick={() => {if(socket) socket.emit('leave_room', {roomId}); navigate('/');}} style={{ background: 'none', border: `1px solid ${colors.border}`, color: colors.textMuted, padding: '4px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', transition: 'all 0.2s' }} onMouseOver={e=>e.currentTarget.style.color='#fff'} onMouseOut={e=>e.currentTarget.style.color=colors.textMuted}>Leave Match</button>
         </div>
       </div>
 
-      {/* --- MAIN ARENA --- */}
-      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      {/* SPLIT PANE WORKSPACE */}
+      <div id="workspace-container" style={{ boxSizing: 'border-box', display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden', padding: '6px', gap: '6px' }}>
         
-        {/* LEFT PANEL */}
-        <div style={{ flex: '0 0 300px', borderRight: '1px solid #1e1e1e', display: 'flex', flexDirection: 'column', background: '#0a0a0a' }}>
-          <div className="tabs">
-            <button className={`tab ${leftTab === 'problem' ? 'active' : ''}`} onClick={() => setLeftTab('problem')} style={{ flex: 1 }}>Problem</button>
-            <button className={`tab ${leftTab === 'hints' ? 'active' : ''}`} onClick={() => setLeftTab('hints')} style={{ flex: 1 }}>AI hints</button>
+        {/* LEFT PANE (Problem) */}
+        <div style={{ boxSizing: 'border-box', width: `${leftWidth}%`, background: colors.bgPanel, borderRadius: '8px', border: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', background: colors.bgHeader, borderBottom: `1px solid ${colors.border}` }}>
+            <button onClick={() => setLeftTab('description')} style={{ padding: '10px 16px', background: leftTab === 'description' ? colors.bgPanel : 'transparent', border: 'none', color: leftTab === 'description' ? '#fff' : colors.textMuted, borderTop: leftTab === 'description' ? `2px solid ${colors.accent}` : '2px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: '600' }}>Description</button>
+            <button onClick={() => setLeftTab('hints')} style={{ padding: '10px 16px', background: leftTab === 'hints' ? colors.bgPanel : 'transparent', border: 'none', color: leftTab === 'hints' ? '#fff' : colors.textMuted, borderTop: leftTab === 'hints' ? `2px solid ${colors.accent}` : '2px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: '600' }}>Hints</button>
           </div>
           
-          <div style={{ flex: 1, overflowY: 'auto', padding: '20px 16px' }}>
-            {leftTab === 'problem' ? (
+          <div style={{ boxSizing: 'border-box', flex: 1, overflowY: 'auto', padding: '24px' }}>
+            {!problem ? (<div style={{ color: colors.textMuted }}>Loading problem...</div>) : leftTab === 'description' ? (
               <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-                  <span style={{ fontSize: '16px', fontWeight: '600', color: '#fff' }}>Two Sum</span>
-                  <span className={`pill ${difficulty.toLowerCase()}`}>{difficulty}</span>
+                <h1 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '16px' }}>{problem.id ? `${problem.id}. ` : ''}{problem.title}</h1>
+                
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '24px' }}>
+                  <span style={{ fontSize: '12px', padding: '4px 12px', background: diffStyles.bg, color: diffStyles.color, border: `1px solid ${diffStyles.border}`, borderRadius: '99px', fontWeight: '600', textTransform: 'capitalize' }}>
+                    {difficulty}
+                  </span>
+                  
+                  <div style={{ position: 'relative' }}>
+                    <button 
+                      onClick={() => setIsCompaniesOpen(!isCompaniesOpen)}
+                      style={{ fontSize: '12px', padding: '4px 12px', background: '#161616', border: `1px solid ${colors.border}`, color: '#ccc', borderRadius: '99px', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', transition: 'all 0.2s' }}
+                      onMouseOver={e => e.currentTarget.style.borderColor = colors.textMuted}
+                      onMouseOut={e => e.currentTarget.style.borderColor = colors.border}
+                    >
+                      🏢 Companies {companiesList.length > 0 ? `(${companiesList.length})` : ''}
+                    </button>
+                    {isCompaniesOpen && (
+                      <div style={{ boxSizing: 'border-box', position: 'absolute', top: '100%', left: 0, marginTop: '8px', background: 'rgba(20, 20, 20, 0.85)', backdropFilter: 'blur(12px)', border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '16px', zIndex: 100, minWidth: '220px', boxShadow: '0 10px 40px rgba(0,0,0,0.9)' }}>
+                        <div style={{ fontSize: '11px', color: colors.textMuted, marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: '700' }}>Asked By</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {companiesList.length > 0 ? companiesList.map((comp, i) => (
+                            <span key={i} style={{ background: '#2a2a2a', border: `1px solid ${colors.border}`, padding: '4px 10px', borderRadius: '4px', fontSize: '12px', color: '#fff' }}>{comp}</span>
+                          )) : <span style={{ color: '#888', fontSize: '12px' }}>General Algorithm</span>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div style={{ fontSize: '13px', color: '#999', lineHeight: '1.8', marginBottom: '20px' }}>
-                  Given array <span style={{ color: '#ff6b2b' }}>nums</span> and integer <span style={{ color: '#ff6b2b' }}>target</span>, return indices of two numbers that add up to target. Exactly one solution exists.
-                </div>
-                <div className="section-label">Example</div>
-                <div style={{ background: '#0f0f0f', border: '1px solid #1e1e1e', borderRadius: '8px', padding: '14px', fontSize: '13px', lineHeight: '1.9', marginBottom: '14px' }}>
-                  <div style={{ marginBottom: '6px' }}><span style={{ color: '#555', display: 'inline-block', width: '60px' }}>Input</span><span style={{ color: '#e8e8e8' }}>nums=[2,7,11,15], target=9</span></div>
-                  <div><span style={{ color: '#555', display: 'inline-block', width: '60px' }}>Output</span><span style={{ color: '#4caf50' }}>[0,1]</span></div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize: '12px', color: '#555', marginBottom: '16px', lineHeight: '1.7' }}>Each hint reduces your score. Use strategically.</div>
-                {hints.map((hint, i) => (
-                  <div key={i} className="hint-row" onClick={() => setActiveHint(i)} style={{ padding: '12px', background: activeHint === i ? '#161616' : 'transparent', marginBottom: '8px', borderRadius: '6px', border: `1px solid ${activeHint === i ? '#ff6b2b44' : '#1e1e1e'}`, cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', color: '#e8e8e8' }}>Hint {i + 1}</span>
-                      <span style={{ fontSize: '12px', color: '#f44336' }}>-10 pts</span>
-                    </div>
+                
+                <div style={{ fontSize: '14px', color: '#d4d4d4', lineHeight: '1.7', marginBottom: '32px', whiteSpace: 'pre-wrap', fontFamily: 'system-ui, sans-serif' }}>{problem.description}</div>
+                
+                {examples.length > 0 && <div style={{ fontSize: '13px', fontWeight: '700', color: '#fff', marginBottom: '10px', textTransform: 'uppercase', letterSpacing:'1px' }}>Examples</div>}
+                {examples.map((ex, idx) => (
+                  <div key={idx} style={{ boxSizing: 'border-box', background: '#161616', borderLeft: `3px solid ${colors.border}`, padding: '16px', fontSize: '13px', marginBottom: '16px', color: '#e8e8e8', whiteSpace: 'pre-wrap', borderRadius: '4px' }}>
+                    {ex.example_text}
                   </div>
                 ))}
               </>
+            ) : (
+              <div style={{ color: colors.textMuted }}>Hints incur an ELO penalty. Use strategically.</div>
             )}
           </div>
         </div>
 
-        {/* MIDDLE PANEL */}
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* VERTICAL RESIZER */}
+        <div 
+          onMouseDown={() => setIsDragging('vertical')}
+          style={{ width: '4px', cursor: 'col-resize', background: 'transparent', transition: 'background 0.2s', borderRadius: '4px', zIndex: 10 }}
+          onMouseOver={e => e.currentTarget.style.background = colors.borderHover}
+          onMouseOut={e => e.currentTarget.style.background = 'transparent'}
+        />
+
+        {/* RIGHT PANE (Editor + Console) */}
+        <div style={{ boxSizing: 'border-box', width: `calc(${100 - leftWidth}% - 10px)`, display: 'flex', flexDirection: 'column', gap: '6px', overflow: 'hidden' }}>
           
-          <div style={{ flex: 1, minHeight: 0, background: '#080808', overflow: 'hidden' }}>
-            <Editor
-              height="100%"
-              width="100%"
-              theme="vs-dark"
-              language={language}
-              value={code}
-              onChange={(value) => setCode(value)}
-              options={{ 
-                minimap: { enabled: false }, 
-                fontSize: 16, 
-                fontFamily: 'JetBrains Mono', 
-                padding: { top: 20 }, 
-                scrollbar: { vertical: 'hidden', horizontal: 'hidden' }, 
-                overviewRulerBorder: false, 
-                hideCursorInOverviewRuler: true,
-                readOnly: !raceStarted 
-              }}
-            />
-          </div>
-
-          <div style={{ height: '220px', flexShrink: 0, borderTop: '1px solid #1e1e1e', background: '#0a0a0a', display: 'flex', flexDirection: 'column' }}>
-            <div className="tabs">
-              <button className={`tab ${bottomTab === 'tc' ? 'active' : ''}`} onClick={() => setBottomTab('tc')}>Test cases</button>
-              <button className={`tab ${bottomTab === 'res' ? 'active' : ''}`} onClick={() => setBottomTab('res')}>Results</button>
-              <button className={`tab ${bottomTab === 'con' ? 'active' : ''}`} onClick={() => setBottomTab('con')}>Console</button>
-            </div>
-
-            <div style={{ flex: 1, padding: '16px', overflowY: 'auto' }}>
-              {bottomTab === 'tc' && (
-                <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                  <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-                    {[0, 1, 2].map((i) => (
-                      <button key={i} onClick={() => setActiveCase(i)} style={{ fontSize: '12px', padding: '6px 16px', background: activeCase === i ? '#1a0f0a' : '#0f0f0f', border: `1px solid ${activeCase === i ? '#ff6b2b44' : '#1e1e1e'}`, borderRadius: '6px', color: activeCase === i ? '#ff6b2b' : '#666', cursor: 'pointer' }}>
-                        Case {i + 1}
-                      </button>
+          {/* EDITOR SECTION */}
+          <div style={{ boxSizing: 'border-box', height: `calc(${100 - bottomHeight}% - 3px)`, background: colors.bgPanel, borderRadius: '8px', border: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', background: colors.bgHeader, borderBottom: `1px solid ${colors.border}` }}>
+              <div style={{ position: 'relative' }}>
+                <button 
+                  onClick={() => setIsLangOpen(!isLangOpen)}
+                  disabled={!raceStarted}
+                  style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: '13px', padding: '6px 12px', borderRadius: '4px', cursor: raceStarted ? 'pointer' : 'not-allowed', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px', transition: 'background 0.2s' }}
+                  onMouseOver={e => e.currentTarget.style.background = '#222'}
+                  onMouseOut={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  {availableLanguages.find(l => l.id === language)?.label || 'C++'} <span style={{ fontSize: '9px', color: '#666' }}>▼</span>
+                </button>
+                {isLangOpen && raceStarted && (
+                  <div style={{ boxSizing: 'border-box', position: 'absolute', top: '100%', left: 0, marginTop: '4px', background: '#1e1e1e', border: `1px solid ${colors.border}`, borderRadius: '6px', overflow: 'hidden', zIndex: 100, minWidth: '120px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+                    {availableLanguages.map(lang => (
+                      <div 
+                        key={lang.id} 
+                        onClick={() => handleLanguageSelect(lang.id)}
+                        style={{ padding: '10px 16px', fontSize: '13px', color: '#e8e8e8', cursor: 'pointer', background: language === lang.id ? '#2a2a2a' : 'transparent', fontWeight: language === lang.id ? '700' : '500' }}
+                        onMouseOver={e => e.currentTarget.style.background = '#333'}
+                        onMouseOut={e => e.currentTarget.style.background = language === lang.id ? '#2a2a2a' : 'transparent'}
+                      >
+                        {lang.label}
+                      </div>
                     ))}
                   </div>
-                  
-                  <div style={{ display: 'flex', gap: '16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}><span style={{ fontSize: '13px', color: '#555' }}>nums =</span><span style={{ fontSize: '13px', color: '#e8e8e8', background: '#0f0f0f', border: '1px solid #1e1e1e', padding: '8px 12px', borderRadius: '6px', width: '100%', fontFamily: 'monospace' }}>[2, 7, 11, 15]</span></div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}><span style={{ fontSize: '13px', color: '#555' }}>target =</span><span style={{ fontSize: '13px', color: '#e8e8e8', background: '#0f0f0f', border: '1px solid #1e1e1e', padding: '8px 12px', borderRadius: '6px', width: '100%', fontFamily: 'monospace' }}>9</span></div>
-                  </div>
+                )}
+              </div>
 
-                  <div style={{ display: 'flex', gap: '16px', marginTop: 'auto' }}>
-                    <button className="btn-sm" style={{ flex: 1, padding: '12px 0', fontSize: '13px', opacity: raceStarted ? 1 : 0.5 }} disabled={!raceStarted} onClick={() => setBottomTab('res')}>Run Code</button>
-                    <button className="btn-sm orange" style={{ flex: 1, padding: '12px 0', fontSize: '13px', opacity: raceStarted ? 1 : 0.5 }} disabled={!raceStarted || isSubmitting} onClick={handleSubmitCode}>
-                      {isSubmitting ? 'Running...' : 'Submit ⚡'}
-                    </button>
-                  </div>
-                </div>
-              )}
-              {bottomTab === 'res' && (
-                <div>
-                  <div style={{ fontSize: '13px', color: myProgress === 5 ? '#4caf50' : '#ff9800', fontWeight: '600', marginBottom: '8px' }}>{myProgress} / 5 passed</div>
-                  <div style={{ fontSize: '12px', color: '#888' }}>Check backend logs or console for detailed execution outputs!</div>
-                </div>
-              )}
+              <button onClick={handleResetCode} title="Reset to original snippet" disabled={!raceStarted} style={{ background: 'transparent', border: 'none', color: colors.textMuted, cursor: raceStarted ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', gap: '6px', transition: 'color 0.2s' }} onMouseOver={e => e.currentTarget.style.color='#fff'} onMouseOut={e => e.currentTarget.style.color=colors.textMuted}>
+                <span style={{ fontSize: '16px' }}>↺</span> <span style={{ fontSize: '12px', fontWeight: '600' }}>Reset</span>
+              </button>
+            </div>
+            
+            <div style={{ boxSizing: 'border-box', flex: 1, padding: '8px 0' }}>
+              <Editor
+                height="100%" width="100%" 
+                theme="codeRaceTheme"
+                language={language === 'python' ? 'python' : language}
+                value={code} onChange={handleCodeChange}
+                options={{ minimap: { enabled: false }, fontSize: 14, fontFamily: "'JetBrains Mono', 'Fira Code', monospace", fontLigatures: true, scrollBeyondLastLine: false, readOnly: !raceStarted || timeLeft === 0 }}
+              />
             </div>
           </div>
-        </div>
 
-        {/* RIGHT PANEL */}
-        <div style={{ flex: '0 0 220px', borderLeft: '1px solid #1e1e1e', padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', background: '#0a0a0a' }}>
-          <div>
-            <div className="section-label">Live score</div>
-            <div style={{ background: '#0f0f0f', border: '1px solid #1a0f0a', borderRadius: '10px', padding: '16px', textAlign: 'center', marginBottom: '12px' }}>
-              <div style={{ fontSize: '12px', color: '#ff6b2b', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px' }}>You</div>
-              <div style={{ fontSize: '36px', fontWeight: '700', color: '#fff' }}>{(myProgress * 20) || 0}</div>
+          {/* HORIZONTAL RESIZER */}
+          <div 
+            onMouseDown={() => setIsDragging('horizontal')}
+            style={{ height: '4px', cursor: 'row-resize', background: 'transparent', transition: 'background 0.2s', borderRadius: '4px', zIndex: 10 }}
+            onMouseOver={e => e.currentTarget.style.background = colors.borderHover}
+            onMouseOut={e => e.currentTarget.style.background = 'transparent'}
+          />
+
+          {/* CONSOLE SECTION */}
+          <div style={{ boxSizing: 'border-box', height: `calc(${bottomHeight}% - 3px)`, background: colors.bgPanel, borderRadius: '8px', border: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            
+            <div style={{ boxSizing: 'border-box', display: 'flex', background: colors.bgHeader, borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
+              <button onClick={() => setBottomTab('testcases')} style={{ padding: '8px 20px', background: bottomTab === 'testcases' ? colors.bgPanel : 'transparent', border: 'none', color: bottomTab === 'testcases' ? '#fff' : colors.textMuted, cursor: 'pointer', fontSize: '13px', fontWeight: '600', borderTop: bottomTab === 'testcases' ? `2px solid ${colors.accent}` : '2px solid transparent' }}>Testcase</button>
+              <button onClick={() => setBottomTab('result')} style={{ padding: '8px 20px', background: bottomTab === 'result' ? colors.bgPanel : 'transparent', border: 'none', color: bottomTab === 'result' ? '#fff' : colors.textMuted, cursor: 'pointer', fontSize: '13px', fontWeight: '600', borderTop: bottomTab === 'result' ? `2px solid ${colors.accent}` : '2px solid transparent' }}>Test Result</button>
             </div>
-            <div style={{ background: '#0f0f0f', border: '1px solid #1e1e1e', borderRadius: '10px', padding: '16px', textAlign: 'center' }}>
-              <div style={{ fontSize: '12px', color: '#555', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px' }}>Opponent</div>
-              <div style={{ fontSize: '36px', fontWeight: '700', color: '#fff' }}>{(opponentProgress * 20) || 0}</div>
+
+            <div style={{ boxSizing: 'border-box', flex: 1, padding: '16px', overflowY: 'auto' }}>
+              {bottomTab === 'testcases' && (
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                    {examples.map((_, i) => (
+                      <button key={i} onClick={() => setActiveCase(i)} style={{ fontSize: '12px', padding: '6px 16px', background: activeCase === i ? '#333' : '#1a1a1a', border: 'none', borderRadius: '6px', color: activeCase === i ? '#fff' : colors.textMuted, cursor: 'pointer', fontWeight: '600', transition: 'background 0.2s' }}>Case {i + 1}</button>
+                    ))}
+                  </div>
+                  {examples[activeCase] && (
+                    <div style={{ boxSizing: 'border-box', background: '#161616', padding: '12px', borderRadius: '6px', border: `1px solid ${colors.border}`, fontFamily: 'monospace', fontSize: '13px', color: '#e8e8e8', whiteSpace: 'pre-wrap' }}>
+                      {examples[activeCase].example_text.split('\n')[0].replace('Input: ', '')}
+                    </div>
+                  )}
+                </div>
+              )}
+              {bottomTab === 'result' && (
+                <div style={{ fontFamily: 'monospace', fontSize: '13px' }}>
+                  {terminalLogs.length === 0 ? <span style={{color: colors.textMuted}}>You must run your code first.</span> : 
+                    <>
+                      {terminalLogs[0].includes('✅') && <div style={{ fontSize: '20px', color: colors.success, fontWeight: 'bold', marginBottom: '12px' }}>Accepted</div>}
+                      {terminalLogs[0].includes('❌') && <div style={{ fontSize: '20px', color: colors.fail, fontWeight: 'bold', marginBottom: '12px' }}>Runtime Error</div>}
+                      {terminalLogs.map((log, idx) => (
+                        <div key={idx} style={{ boxSizing: 'border-box', color: log.includes('❌') || log.includes('🚨') ? colors.fail : log.includes('✅') ? colors.success : '#ccc', padding: '10px', background: '#161616', borderRadius: '6px', border: `1px solid ${colors.border}`, marginBottom: '8px', whiteSpace: 'pre-wrap' }}>{log}</div>
+                      ))}
+                    </>
+                  }
+                </div>
+              )}
             </div>
+
           </div>
-        </div>
 
+        </div>
       </div>
     </div>
   );
