@@ -209,6 +209,7 @@ const Race = () => {
         language, code, problemId: problem?.id || 'two-sum', roomId, userId: socket.id
       });
 
+      console.log(data);
       if (data.success) {
         setTerminalLogs([`✅ Accepted`, `Execution Time: ${data.executionTimeMs}ms`, `Passed Cases: ${data.passedCount}/${data.totalCount}`]);
         setTotalCases(data.totalCount);
