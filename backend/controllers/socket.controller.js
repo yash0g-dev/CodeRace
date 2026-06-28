@@ -11,7 +11,6 @@ export const handleSocketConnection = (io, socket) => {
     const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
     
     // Store all the settings, but DO NOT fetch the problem yet.
-    // We wait until both players are ready so we don't waste DB reads.
     activeRooms.set(roomId, {
       settings: { difficulty, company, matchType },
       players: [{ id: socket.id, name: playerName, isReady: false, progress: 0 }],
@@ -21,12 +20,12 @@ export const handleSocketConnection = (io, socket) => {
 
     socket.join(roomId);
     socket.emit("room_created", { roomId });
-    console.log(`🏠 Room created: ${roomId} by ${playerName} (Diff: ${difficulty}, Co: ${company})`);
+    console.log(`🏠 Room created: ${roomId} by ${playerName} (Diff: ${difficulty}, Co: ${company}, Type: ${matchType})`);
 
-    // Clean up empty rooms after 5 minutes
+    // Clean up empty rooms after 5 minutes (ignoring Practice mode)
     setTimeout(() => {
       const room = activeRooms.get(roomId);
-      if (room && room.players.length === 1 && room.status === "waiting") {
+      if (room && room.players.length === 1 && room.status === "waiting" && room.settings.matchType !== "practice") {
         io.to(roomId).emit("room_error", { message: "Room expired. No opponent joined." });
         io.in(roomId).socketsLeave(roomId);
         activeRooms.delete(roomId);
@@ -39,6 +38,7 @@ export const handleSocketConnection = (io, socket) => {
     const room = activeRooms.get(roomId);
 
     if (!room) return socket.emit("room_error", { message: "Room not found or expired." });
+    if (room.settings.matchType === 'practice') return socket.emit("room_error", { message: "Cannot join a practice room." });
     if (room.players.length >= 2) return socket.emit("room_error", { message: "Room is already full." });
     if (room.status !== "waiting") return socket.emit("room_error", { message: "Match already in progress." });
 
@@ -71,10 +71,15 @@ export const handleSocketConnection = (io, socket) => {
     // Broadcast the status update to trigger the UI glow
     io.to(roomId).emit("player_ready_status", { playerId: socket.id, isReady });
 
-    // Check if BOTH players are in and BOTH are ready
-    if (room.players.length === 2 && room.players.every(p => p.isReady) && room.status === "waiting") {
+    // --- THE FIX: Practice Mode handles 1 player, 1v1 handles 2 players ---
+    const isPractice = room.settings.matchType === 'practice';
+    const isReadyToStart = isPractice 
+        ? (room.players.length === 1 && room.players[0].isReady)
+        : (room.players.length === 2 && room.players.every(p => p.isReady));
+
+    if (isReadyToStart && room.status === "waiting") {
       room.status = "active";
-      console.log(`🏁 Both players ready in ${roomId}. Fetching problem...`);
+      console.log(`🏁 Match starting in ${roomId}. Fetching problem...`);
 
       try {
         // Map frontend diff state to database diff state
@@ -167,8 +172,7 @@ export const handleSocketConnection = (io, socket) => {
     const playerIndex = room.players.findIndex(p => p.id === currentSocketId);
     if (playerIndex !== -1) {
       room.players.splice(playerIndex, 1);
-      socket.leave(roomId);
-
+      
       if (room.players.length === 0) {
         activeRooms.delete(roomId);
       } else {
@@ -182,6 +186,7 @@ export const handleSocketConnection = (io, socket) => {
 
   socket.on("leave_room", ({ roomId }) => {
     handleLeave(roomId, socket.id);
+    socket.leave(roomId);
   });
 
   socket.on("disconnect", () => {
