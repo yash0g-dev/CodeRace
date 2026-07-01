@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useSocket } from '../context/SocketContext.jsx';
+ import { useSocket } from '../context/socketStore.js';
 
 const Result = () => {
   const navigate = useNavigate();

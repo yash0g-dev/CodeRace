@@ -11,7 +11,7 @@ const oneCompilerLanguageMap = {
   java: "java",
 };
 
-// @desc   Execute code on OneCompiler with Photo Finish logic
+// @desc   Execute code on OneCompiler with Photo Finish logic (SUBMIT)
 // @route  POST /api/code/execute
 // @access Public
 export const executeCode = asyncHandler(async (req, res) => {
@@ -59,6 +59,7 @@ export const executeCode = asyncHandler(async (req, res) => {
   console.log("=======================================================\n");
 
   try {
+    console.log("RapidAPI Key:", process.env.RAPIDAPI_KEY?.slice(0, 10));
     const response = await axios.post(
       "https://onecompiler-apis.p.rapidapi.com/api/v1/run",
       {
@@ -137,12 +138,106 @@ export const executeCode = asyncHandler(async (req, res) => {
       });
     }
   } catch (error) {
-    console.error(
-      "OneCompiler Execution Error:",
-      error.response ? error.response.data : error.message,
+  console.log("========== EXECUTE ERROR ==========");
+  console.log("Status:", error.response?.status);
+  console.log("Data:", error.response?.data);
+  console.log("Headers:", error.response?.headers);
+
+  return res.status(error.response?.status || 500).json({
+    success: false,
+    error: error.response?.data || error.message,
+  });
+}
+
+});
+// @desc   Execute code against SAMPLE test cases only (RUN)
+// @route  POST /api/code/run
+// @access Public
+export const runSampleCode = asyncHandler(async (req, res) => {
+  const { code, language, problemId } = req.body;
+
+  if (!code || !language || !problemId) {
+    res.status(400);
+    throw new Error("Please provide code, language, and problemId");
+  }
+
+  // FETCH METADATA AND TEST CASES
+  const { data: problem, error: dbError } = await supabase
+    .from("problems")
+    .select("metadata, test_cases")
+    .eq("id", problemId)
+    .single();
+
+  if (dbError || !problem) {
+    return res.status(404).json({ success: false, error: "Problem not found" });
+  }
+
+  // Grab only the sample test cases (fallback to first 3 if not explicitly marked)
+  const sampleCases = problem.test_cases.filter(tc => tc.is_example || tc.isExample);
+  const casesToRun = sampleCases.length > 0 ? sampleCases : problem.test_cases.slice(0, 3);
+
+  // GENERATE HARNESS (Same as submit, but fewer cases)
+  const { sourceCode, stdin } = generatePayload(
+    language,
+    code,
+    problem.metadata,
+    casesToRun
+  );
+
+  try {
+    console.log("RapidAPI Key:", process.env.RAPIDAPI_KEY?.slice(0, 10));
+    const response = await axios.post(
+      "https://onecompiler-apis.p.rapidapi.com/api/v1/run",
+      {
+        language: oneCompilerLanguageMap[language] || language,
+        stdin: stdin,
+        files: [{ 
+          name: `index.${language === "python" ? "py" : language === "javascript" ? "js" : language === "cpp" ? "cpp" : "java"}`, 
+          content: sourceCode 
+        }],
+      },
+      {
+        headers: {
+          "content-type": "application/json",
+          "X-RapidAPI-Key": process.env.RAPIDAPI_KEY || process.env.ONECOMPILER_API_KEY,
+          "X-RapidAPI-Host": "onecompiler-apis.p.rapidapi.com",
+        },
+      }
     );
-    res.status(500);
-    throw new Error("Compilation Error or API unreachable.");
+
+    const runResult = response.data;
+    let stdout = runResult.stdout ? runResult.stdout.trim() : "";
+    let stderr = runResult.stderr || runResult.exception || "";
+
+    let passedCount = 0;
+    const totalCount = casesToRun.length;
+
+    // PARSE PASSED COUNT & STRIP THE HARNESS TOKEN
+    const resultMatch = stdout.match(/RESULT\|(\d+)\/(\d+)/);
+    if (resultMatch) {
+      passedCount = parseInt(resultMatch[1]);
+      // Remove our internal RESULT string so the user only sees their own console logs
+      stdout = stdout.replace(/\n?RESULT\|\d+\/\d+\n?/, '').trim();
+    }
+
+    res.status(200).json({
+      success: true,
+      passedCount,
+      totalCount,
+      allPassed: passedCount === totalCount,
+      stdout,
+      stderr,
+    });
+
+  } catch (error) {
+  console.log("========== RUN ERROR ==========");
+  console.log("Status:", error.response?.status);
+  console.log("Data:", error.response?.data);
+  console.log("Headers:", error.response?.headers);
+
+  return res.status(error.response?.status || 500).json({
+    success: false,
+    error: error.response?.data || error.message, });
+  
   }
 });
-

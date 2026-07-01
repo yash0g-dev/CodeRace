@@ -1,9 +1,12 @@
 import express from 'express';
-// 1. Import the new function we created
-import { executeCode } from '../controllers/code.controller.js';
+import { executeCode, runSampleCode } from '../controllers/code.controller.js';
 
 const router = express.Router();
 
-// 2. Map it to the exact endpoint your Race.jsx frontend is hitting
+// Maps to frontend Submit button (Hidden test cases + match logic)
 router.post('/execute', executeCode);
+
+// Maps to frontend Run button (Sample test cases + stdout/stderr only)
+router.post('/run', runSampleCode);
+
 export default router;

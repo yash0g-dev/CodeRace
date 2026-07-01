@@ -10,10 +10,9 @@ export const handleSocketConnection = (io, socket) => {
   socket.on("create_room", ({ difficulty, company, matchType, playerName }) => {
     const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
     
-    // Store all the settings, but DO NOT fetch the problem yet.
     activeRooms.set(roomId, {
       settings: { difficulty, company, matchType },
-      players: [{ id: socket.id, name: playerName, isReady: false, progress: 0 }],
+      players: [{ id: socket.id, name: playerName, isReady: false, progress: 0, disconnected: false }],
       problem: null, 
       status: "waiting"
     });
@@ -22,7 +21,6 @@ export const handleSocketConnection = (io, socket) => {
     socket.emit("room_created", { roomId });
     console.log(`🏠 Room created: ${roomId} by ${playerName} (Diff: ${difficulty}, Co: ${company}, Type: ${matchType})`);
 
-    // Clean up empty rooms after 5 minutes (ignoring Practice mode)
     setTimeout(() => {
       const room = activeRooms.get(roomId);
       if (room && room.players.length === 1 && room.status === "waiting" && room.settings.matchType !== "practice") {
@@ -42,10 +40,9 @@ export const handleSocketConnection = (io, socket) => {
     if (room.players.length >= 2) return socket.emit("room_error", { message: "Room is already full." });
     if (room.status !== "waiting") return socket.emit("room_error", { message: "Match already in progress." });
 
-    room.players.push({ id: socket.id, name: playerName, isReady: false, progress: 0 });
+    room.players.push({ id: socket.id, name: playerName, isReady: false, progress: 0, disconnected: false });
     socket.join(roomId);
 
-    // Give the joiner the settings established by the creator
     socket.emit("room_joined", {
       roomId,
       creatorName: room.players[0].name,
@@ -54,7 +51,6 @@ export const handleSocketConnection = (io, socket) => {
       matchType: room.settings.matchType
     });
 
-    // Tell the creator who just joined
     socket.to(roomId).emit("player_joined", { joinerName: playerName });
     console.log(`⚔️ ${playerName} joined room ${roomId}`);
   });
@@ -64,14 +60,11 @@ export const handleSocketConnection = (io, socket) => {
     const room = activeRooms.get(roomId);
     if (!room) return;
 
-    // Update readiness for the specific player
     const player = room.players.find(p => p.id === socket.id);
     if (player) player.isReady = isReady;
 
-    // Broadcast the status update to trigger the UI glow
     io.to(roomId).emit("player_ready_status", { playerId: socket.id, isReady });
 
-    // --- THE FIX: Practice Mode handles 1 player, 1v1 handles 2 players ---
     const isPractice = room.settings.matchType === 'practice';
     const isReadyToStart = isPractice 
         ? (room.players.length === 1 && room.players[0].isReady)
@@ -82,26 +75,20 @@ export const handleSocketConnection = (io, socket) => {
       console.log(`🏁 Match starting in ${roomId}. Fetching problem...`);
 
       try {
-        // Map frontend diff state to database diff state
         const dbDiff = room.settings.difficulty === 'med' ? 'medium' : room.settings.difficulty;
-        let query = supabase.from('problems').select('*').eq('difficulty', dbDiff);
+        let query = supabase.from('problems').select('*').eq('difficulty', dbDiff).eq('available', true);
 
-        // Apply company filter if selected
         if (room.settings.company !== 'All') {
           query = query.contains('companies', [room.settings.company.toLowerCase()]);
         }
 
         const { data: problems, error } = await query;
-
         if (error) throw error;
 
-        // Pick a random problem from the valid list
-        const selectedProblem = (problems && problems.length > 0) 
-            ? problems[Math.floor(Math.random() * problems.length)] 
-            : null;
+        const selectedProblem = (problems && problems.length > 0) ? problems[Math.floor(Math.random() * problems.length)] : null;
 
         if (!selectedProblem) {
-            io.to(roomId).emit("room_error", { message: "No problem found matching those exact settings. Try 'All Companies'." });
+            io.to(roomId).emit("room_error", { message: "No problem found matching those settings." });
             room.status = "waiting";
             room.players.forEach(p => p.isReady = false);
             io.to(roomId).emit("player_ready_status", { playerId: socket.id, isReady: false });
@@ -110,19 +97,17 @@ export const handleSocketConnection = (io, socket) => {
 
         room.problem = selectedProblem;
 
-        // 1. Tell React to navigate to /race
-        io.to(roomId).emit("match_started", { 
-          roomId, 
-          difficulty: room.settings.difficulty,
-          company: room.settings.company,
-          matchType: room.settings.matchType 
-        });
-
-        // 2. Wait for React to render, then drop the problem and start the GO! countdown
-        setTimeout(() => {
-          io.to(roomId).emit("problem_data", selectedProblem);
-          io.to(roomId).emit("start_countdown", { seconds: 3 });
-        }, 1500);
+        if (isPractice) {
+          socket.emit("problem_data", selectedProblem);
+          socket.emit("start_countdown", { seconds: 3 });
+          console.log(`🎯 Practice match loaded instantly for room ${roomId}`);
+        } else {
+          io.to(roomId).emit("match_started", { roomId, difficulty: room.settings.difficulty, company: room.settings.company, matchType: room.settings.matchType });
+          setTimeout(() => {
+            io.to(roomId).emit("problem_data", selectedProblem);
+            io.to(roomId).emit("start_countdown", { seconds: 3 });
+          }, 1500);
+        }
 
       } catch (err) {
         console.error("Database error fetching problem:", err.message);
@@ -131,40 +116,55 @@ export const handleSocketConnection = (io, socket) => {
     }
   });
 
-  // --- 4. SYNC PLAYER PROGRESS ---
+  // --- 4. REJOIN ROOM (REFRESH HANDSHAKE) ---
+  socket.on("rejoin_room", ({ roomId }) => {
+    const room = activeRooms.get(roomId);
+    if (!room) return socket.emit("room_error", { message: "Room expired or closed." });
+
+    // Find the disconnected player and assign the new socket.id to them
+    const player = room.players.find(p => p.disconnected);
+    if (player) {
+      player.id = socket.id;
+      player.disconnected = false;
+    }
+
+    socket.join(roomId);
+    console.log(`🔄 Player reconnected to room ${roomId}`);
+
+    // If the match was already active, resend the problem data and immediately clear the countdown
+    if (room.status === "active" && room.problem) {
+      socket.emit("problem_data", room.problem);
+      socket.emit("start_countdown", { seconds: 0 }); // Instant GO!
+    }
+  });
+
+  // --- 5. SYNC PLAYER PROGRESS ---
   socket.on("progress_update", ({ roomId, progress }) => {
     socket.to(roomId).emit("opponent_progress", { progress });
   });
 
-  // --- 5. MATCH WON (V2 ELO INTEGRATION) ---
+  // --- 6. MATCH WON ---
   socket.on("player_won", async ({ roomId, executionTimeMs }) => {
     const room = activeRooms.get(roomId);
     
     if (room && room.status === "active") {
       room.status = "finished";
-      
-      // Instantly tell the frontend the match is over for snappiness
       io.to(roomId).emit("match_over", { winnerId: socket.id });
       
       try {
-        // Run the heavy V2 ELO calculations in the background
         const problemId = room.problem?.id || 'two-sum';
         const result = await declareWinner(roomId, socket.id, problemId, executionTimeMs || 0);
-        
-        if (result && result.success) {
-           console.log(`🏆 Match finalized! ELO Exchanged: +${result.pointsExchanged}`);
-        }
+        if (result && result.success) console.log(`🏆 Match finalized! ELO Exchanged: +${result.pointsExchanged}`);
       } catch (dbError) {
         console.error("Failed to process V2 ELO engine transaction:", dbError.message);
       }
       
-      // Boot players and clear room
       io.in(roomId).socketsLeave(roomId);
       activeRooms.delete(roomId);
     }
   });
 
-  // --- 6. SAFE CLEANUP (LEAVE & DISCONNECT) ---
+  // --- 7. SAFE CLEANUP (LEAVE & DISCONNECT) ---
   const handleLeave = (roomId, currentSocketId) => {
     const room = activeRooms.get(roomId);
     if (!room) return;
@@ -176,7 +176,6 @@ export const handleSocketConnection = (io, socket) => {
       if (room.players.length === 0) {
         activeRooms.delete(roomId);
       } else {
-        // Opponent left, cancel readiness
         io.to(roomId).emit("opponent_left_handshake");
         room.players[0].isReady = false;
         room.status = "waiting";
@@ -191,8 +190,23 @@ export const handleSocketConnection = (io, socket) => {
 
   socket.on("disconnect", () => {
     console.log(`🔴 Socket disconnected: ${socket.id}`);
-    for (const roomId of activeRooms.keys()) {
-      handleLeave(roomId, socket.id);
+    
+    // Instead of instantly destroying the room, give a 10-second grace period for refresh reconnects
+    for (const [roomId, room] of activeRooms.entries()) {
+      const player = room.players.find(p => p.id === socket.id);
+      if (player) {
+        player.disconnected = true; // Mark as temporarily missing
+        
+        setTimeout(() => {
+          const checkRoom = activeRooms.get(roomId);
+          if (checkRoom) {
+            const checkPlayer = checkRoom.players.find(p => p.id === socket.id && p.disconnected);
+            if (checkPlayer) {
+              handleLeave(roomId, socket.id); // Permanently boot them if they didn't rejoin
+            }
+          }
+        }, 10000); 
+      }
     }
   });
 };
