@@ -61,8 +61,21 @@ export const handleSocketConnection = (io, socket) => {
     const room = activeRooms.get(roomId);
     if (!room) return;
 
-    const player = room.players.find(p => p.id === socket.id);
-    if (player) player.isReady = isReady;
+    // 👉 THE FIX: Handle React's aggressive reconnects changing the socket ID
+    let player = room.players.find(p => p.id === socket.id);
+    
+    if (!player && room.settings.matchType === 'practice' && room.players.length > 0) {
+        console.log(`⚠️ Practice socket ID mismatch caught. Healing room ${roomId}...`);
+        room.players[0].id = socket.id; 
+        player = room.players[0];
+    }
+
+    if (player) {
+      player.isReady = isReady;
+    } else {
+      console.log(`❌ toggle_ready failed: Socket ${socket.id} not found in room ${roomId}`);
+      return;
+    }
 
     io.to(roomId).emit("player_ready_status", { playerId: socket.id, isReady });
 
@@ -78,7 +91,6 @@ export const handleSocketConnection = (io, socket) => {
       try {
         const dbDiff = room.settings.difficulty === 'med' ? 'medium' : room.settings.difficulty;
         
-        // 👉 UPDATED QUERY: Enforce strict data requirements to avoid ghost problems
         let query = supabase.from('problems')
           .select('*')
           .eq('difficulty', dbDiff)
@@ -106,9 +118,8 @@ export const handleSocketConnection = (io, socket) => {
 
         room.problem = selectedProblem;
 
-        // --- PRECISE SERVER TIMESTAMP LOGIC ---
         if (isPractice) {
-          room.startTime = Date.now() + 3000; // Start exactly 3 seconds from now
+          room.startTime = Date.now() + 3000; 
           socket.emit("problem_data", selectedProblem);
           socket.emit("start_countdown", { startTime: room.startTime });
           console.log(`🎯 Practice match loaded instantly for room ${roomId}`);
@@ -116,7 +127,7 @@ export const handleSocketConnection = (io, socket) => {
           io.to(roomId).emit("match_started", { roomId, difficulty: room.settings.difficulty, company: room.settings.company, matchType: room.settings.matchType });
           
           setTimeout(() => {
-            room.startTime = Date.now() + 3000; // Start exactly 3 seconds after the UI routes
+            room.startTime = Date.now() + 3000; 
             io.to(roomId).emit("problem_data", selectedProblem);
             io.to(roomId).emit("start_countdown", { startTime: room.startTime });
           }, 1500);
@@ -145,7 +156,6 @@ export const handleSocketConnection = (io, socket) => {
 
     if (room.status === "active" && room.problem) {
       socket.emit("problem_data", room.problem);
-      // Give them the original start time so the frontend knows to skip the countdown
       socket.emit("start_countdown", { startTime: room.startTime }); 
     }
   });
@@ -195,7 +205,6 @@ export const handleSocketConnection = (io, socket) => {
     }
   };
 
-  // 👉 FIXED: Defensive check prevents crashes on undefined payloads
   socket.on("leave_room", (data) => {
     if (!data || !data.roomId) return; 
     
