@@ -122,8 +122,11 @@ const Race = () => {
     const handlePracticeRoomCreated = ({ roomId: newRoomId }) => {
       setRoomId(newRoomId); 
       sessionStorage.setItem('coderace_active_room', newRoomId); 
-      // 👉 Auto-Ready for Practice Mode
-      socket.emit('toggle_ready', { roomId: newRoomId, isReady: true });
+      
+      // 👉 THE FIX: 500ms timeout prevents the React race condition
+      setTimeout(() => {
+        socket.emit('toggle_ready', { roomId: newRoomId, isReady: true });
+      }, 500);
     };
 
     socket.on('room_created', handlePracticeRoomCreated);
@@ -195,7 +198,7 @@ const Race = () => {
         navigate('/result', { 
           state: { 
             didIWin, myProgress, opponentProgress, myName, opponentName,
-            myCode: code, problemTitle: problem?.title // 👉 Passing Code to Result
+            myCode: code, problemTitle: problem?.title 
           } 
         });
       }, 3000);
@@ -212,7 +215,7 @@ const Race = () => {
           navigate('/result', { 
             state: { 
               didIWin: true, myProgress, opponentProgress: 'Fled', myName, opponentName,
-              myCode: code, problemTitle: problem?.title // 👉 Passing Code to Result
+              myCode: code, problemTitle: problem?.title 
             } 
           });
         }, 3000);
@@ -233,7 +236,7 @@ const Race = () => {
       socket.off('opponent_left_handshake');
       socket.off('room_error');
     };
-  }, [socket, roomId, isPractice, navigate, initialCompany, myProgress, opponentProgress, setCountdown, setTerminalLogs, hasClickedReady, raceStarted, syncCountdown, myName, opponentName, code, problem]);
+  }, [socket, roomId, isPractice, navigate, initialCompany, myProgress, opponentProgress, setCountdown, setTerminalLogs, hasClickedReady, raceStarted, syncCountdown, myName, opponentName, code, problem]); 
 
   // ==========================================
   // 4. EDITOR ACTIONS
