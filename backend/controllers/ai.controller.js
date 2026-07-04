@@ -33,7 +33,16 @@ export const getCodeReview = asyncHandler(async (req, res) => {
 
     res.status(200).json({ review });
   } catch (error) {
-    console.error("AI Review Error:", error);
-    res.status(500).json({ error: "Failed to generate AI review." });
+    console.error("AI Review Error:", error.message || error);
+    
+    // 👉 3. THE FIX: Catch the rate limit error specifically and pass it to the frontend!
+    if (error.status === 429 || (error.message && error.message.includes("429"))) {
+      return res.status(429).json({ 
+        error: "🏎️ Pit stop! The AI engines are running too hot. Try your request again in 60 seconds." 
+      });
+    }
+
+    // Default error for anything else
+    res.status(500).json({ error: "Failed to generate AI review. Please try again later." });
   }
 });
