@@ -19,22 +19,32 @@ dotenv.config({ path: path.resolve(__dirname, ".env") });
 const app = express();
 const httpServer = createServer(app);
 
-// Initialize Socket.io with CORS allows for the React frontend
+// 👉 UPDATED: Added your live Vercel URL to Socket.io CORS
 const io = new Server(httpServer, {
   cors: {
     origin: [
       process.env.CLIENT_URL || "http://localhost:5173",
       "http://localhost:5174",
+      "https://coderace-live.vercel.app" 
     ],
     methods: ["GET", "POST"],
+    credentials: true,
   },
 });
 
 // MAKE IO GLOBAL: This allows your code.controller.js to broadcast wins!
 global.io = io;
 
-// Basic Middlewares
-app.use(cors());
+// 👉 UPDATED: Added your live Vercel URL to Express CORS
+app.use(cors({
+  origin: [
+    process.env.CLIENT_URL || "http://localhost:5173",
+    "http://localhost:5174",
+    "https://coderace-live.vercel.app"
+  ],
+  credentials: true,
+}));
+
 app.use(express.json());
 
 // Routes
