@@ -19,19 +19,21 @@ const Race = () => {
   const { socket } = useSocket();
   const location = useLocation();
   const navigate = useNavigate();
-  
+
   // --- Routing & Match State ---
-  const storedRoom = sessionStorage.getItem('coderace_active_room');
+  const difficulty = (location.state?.difficulty || 'medium').toLowerCase();
+  const initialCompany = location.state?.company || 'All';
+  // 👉 FIX 1: Moved isPractice up so it can block ghost rooms
+  const isPractice = location.state?.isPractice || false;
+  const matchType = location.state?.matchType || 'Rapid (30 min)';
+
+  // 👉 FIX 1 (Cont): If practice mode, NEVER load a stored room
+  const storedRoom = isPractice ? null : sessionStorage.getItem('coderace_active_room');
   const [roomId, setRoomId] = useState(location.state?.roomId || storedRoom || 'ERROR');
   
   // --- PLAYER NAMES STATE ---
   const myName = location.state?.playerName || 'Player';
   const [opponentName, setOpponentName] = useState(location.state?.opponentName || 'Waiting...');
-
-  const difficulty = (location.state?.difficulty || 'medium').toLowerCase();
-  const initialCompany = location.state?.company || 'All';
-  const isPractice = location.state?.isPractice || false;
-  const matchType = location.state?.matchType || 'Rapid (30 min)';
 
   // --- Timer Fallback Logic ---
   const getTimeLimit = (type) => {
@@ -123,7 +125,7 @@ const Race = () => {
       setRoomId(newRoomId); 
       sessionStorage.setItem('coderace_active_room', newRoomId); 
       
-      // 👉 THE FIX: 500ms timeout prevents the React race condition
+      // 👉 The 500ms timeout prevents the React race condition
       setTimeout(() => {
         socket.emit('toggle_ready', { roomId: newRoomId, isReady: true });
       }, 500);
@@ -144,7 +146,9 @@ const Race = () => {
     if (roomId === 'ERROR' && !isPractice) { navigate('/'); return; }
 
     const activeRoomId = sessionStorage.getItem('coderace_active_room');
-    if (activeRoomId && activeRoomId === roomId && !hasClickedReady) {
+    
+    // 👉 FIX 2: Never attempt to "rejoin" a room if we are in Practice Mode!
+    if (!isPractice && activeRoomId && activeRoomId === roomId && !hasClickedReady) {
       socket.emit('rejoin_room', { roomId });
       setHasClickedReady(true);
     } else if (roomId !== 'ERROR') {
