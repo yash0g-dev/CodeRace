@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useSocket } from '../context/socketStore.js';
 import LobbyForm from './lobby/LobbyForm.jsx';
@@ -28,6 +28,15 @@ const Lobby = () => {
   const [focusedInput, setFocusedInput] = useState(null);
   const [isRequestingRoom, setIsRequestingRoom] = useState(false);
   const [lobbyError, setLobbyError] = useState('');
+
+  // --- SOLVE CLOSURE BUG FOR SOCKET LISTENERS ---
+  const playerNameRef = useRef('');
+  const opponentNameRef = useRef('Opponent'); // 👉 ADDED REF FOR OPPONENT
+  
+  useEffect(() => {
+    playerNameRef.current = playerName;
+    if (opponentName) opponentNameRef.current = opponentName; // 👉 SYNC OPPONENT NAME
+  }, [playerName, opponentName]);
 
   // --- TIMER EXTRACTION LOGIC ---
   const extractTimeLimit = (type) => {
@@ -60,7 +69,20 @@ const Lobby = () => {
 
     const handleMatchStarted = ({ roomId, difficulty, company, matchType }) => {
       const timeLimit = extractTimeLimit(matchType);
-      navigate('/race', { state: { roomId, difficulty, company, matchType, timeLimit, isPractice: false } });
+      
+      // 👉 UPDATED: Now safely passes BOTH live names using Refs
+      navigate('/race', { 
+        state: { 
+          roomId, 
+          difficulty, 
+          company, 
+          matchType, 
+          timeLimit, 
+          isPractice: false,
+          playerName: playerNameRef.current.trim(),
+          opponentName: opponentNameRef.current 
+        } 
+      });
     };
 
     const handleRoomError = ({ message }) => {
@@ -73,15 +95,21 @@ const Lobby = () => {
       setLobbyError('Opponent left the arena. Waiting for a new player.');
     };
 
-    socket.on('room_created', handleRoomCreated); socket.on('room_joined', handleRoomJoined);
-    socket.on('player_joined', handlePlayerJoined); socket.on('player_ready_status', handleReadyStatus);
-    socket.on('match_started', handleMatchStarted); socket.on('room_error', handleRoomError);
+    socket.on('room_created', handleRoomCreated); 
+    socket.on('room_joined', handleRoomJoined);
+    socket.on('player_joined', handlePlayerJoined); 
+    socket.on('player_ready_status', handleReadyStatus);
+    socket.on('match_started', handleMatchStarted); 
+    socket.on('room_error', handleRoomError);
     socket.on('opponent_left_handshake', handleOpponentLeft);
 
     return () => {
-      socket.off('room_created', handleRoomCreated); socket.off('room_joined', handleRoomJoined);
-      socket.off('player_joined', handlePlayerJoined); socket.off('player_ready_status', handleReadyStatus);
-      socket.off('match_started', handleMatchStarted); socket.off('room_error', handleRoomError);
+      socket.off('room_created', handleRoomCreated); 
+      socket.off('room_joined', handleRoomJoined);
+      socket.off('player_joined', handlePlayerJoined); 
+      socket.off('player_ready_status', handleReadyStatus);
+      socket.off('match_started', handleMatchStarted); 
+      socket.off('room_error', handleRoomError);
       socket.off('opponent_left_handshake', handleOpponentLeft);
     };
   }, [socket, navigate, isPracticeMode]);
@@ -117,7 +145,17 @@ const Lobby = () => {
     setLobbyError('');
     const finalMatchType = getFinalMatchType();
     const timeLimit = extractTimeLimit(finalMatchType);
-    navigate('/race', { state: { difficulty, company, matchType: finalMatchType, timeLimit, isPractice: true } });
+    
+    navigate('/race', { 
+      state: { 
+        difficulty, 
+        company, 
+        matchType: finalMatchType, 
+        timeLimit, 
+        isPractice: true,
+        playerName: playerName.trim()
+      } 
+    });
   };
 
   const handleCreateRoom = () => {

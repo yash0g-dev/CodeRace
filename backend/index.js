@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 
 import userRoutes from "./routes/user.route.js";
 import codeRoutes from "./routes/code.route.js";
+import aiRoutes from "./routes/ai.route.js"; // <-- 1. ADDED AI ROUTE IMPORT
 import { handleSocketConnection } from "./controllers/socket.controller.js";
 
 // 1. Bulletproof path resolution for ES Modules
@@ -39,6 +40,7 @@ app.use(express.json());
 // Routes
 app.use("/api/code", codeRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/ai", aiRoutes); // <-- 2. ADDED AI ROUTE MOUNT
 
 // Sanity check route to ensure Express is working
 app.get("/api/health", (req, res) => {
@@ -52,4 +54,3 @@ const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
   console.log(`🚀 CodeRace backend running on port ${PORT}`);
 });
-

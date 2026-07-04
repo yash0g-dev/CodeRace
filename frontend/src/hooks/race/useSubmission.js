@@ -72,6 +72,17 @@ export const useSubmission = (socket, roomId, problem, isPractice, raceStarted, 
             socket.emit('progress_update', { roomId, progress: data.passedCount });
           }
         }
+
+        // --- THE MISSING WIN TRIGGER ---
+        if (data.passedCount === data.totalCount) {
+           // We pass all cases! Tell the server we won.
+           socket.emit('player_won', { 
+             roomId, 
+             executionTimeMs: data.executionTimeMs 
+           });
+        }
+        // -------------------------------
+
       } else {
         setTerminalLogs([`❌ Runtime Error`, data.error || data.details]);
       }
@@ -90,6 +101,6 @@ export const useSubmission = (socket, roomId, problem, isPractice, raceStarted, 
     myProgress,
     totalCases,
     handleSubmitCode,
-    handleRunCode // <-- Make sure to export it!
+    handleRunCode
   };
 };

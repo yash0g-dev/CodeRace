@@ -14,7 +14,8 @@ export const handleSocketConnection = (io, socket) => {
       settings: { difficulty, company, matchType },
       players: [{ id: socket.id, name: playerName, isReady: false, progress: 0, disconnected: false }],
       problem: null, 
-      status: "waiting"
+      status: "waiting",
+      startTime: null // <-- Precise start time tracking
     });
 
     socket.join(roomId);
@@ -76,7 +77,15 @@ export const handleSocketConnection = (io, socket) => {
 
       try {
         const dbDiff = room.settings.difficulty === 'med' ? 'medium' : room.settings.difficulty;
-        let query = supabase.from('problems').select('*').eq('difficulty', dbDiff).eq('available', true);
+        
+        // 👉 UPDATED QUERY: Enforce strict data requirements to avoid ghost problems
+        let query = supabase.from('problems')
+          .select('*')
+          .eq('difficulty', dbDiff)
+          .eq('available', true)
+          .not('description', 'is', null)   
+          .neq('description', '')           
+          .not('code_snippets', 'is', null); 
 
         if (room.settings.company !== 'All') {
           query = query.contains('companies', [room.settings.company.toLowerCase()]);
@@ -97,15 +106,19 @@ export const handleSocketConnection = (io, socket) => {
 
         room.problem = selectedProblem;
 
+        // --- PRECISE SERVER TIMESTAMP LOGIC ---
         if (isPractice) {
+          room.startTime = Date.now() + 3000; // Start exactly 3 seconds from now
           socket.emit("problem_data", selectedProblem);
-          socket.emit("start_countdown", { seconds: 3 });
+          socket.emit("start_countdown", { startTime: room.startTime });
           console.log(`🎯 Practice match loaded instantly for room ${roomId}`);
         } else {
           io.to(roomId).emit("match_started", { roomId, difficulty: room.settings.difficulty, company: room.settings.company, matchType: room.settings.matchType });
+          
           setTimeout(() => {
+            room.startTime = Date.now() + 3000; // Start exactly 3 seconds after the UI routes
             io.to(roomId).emit("problem_data", selectedProblem);
-            io.to(roomId).emit("start_countdown", { seconds: 3 });
+            io.to(roomId).emit("start_countdown", { startTime: room.startTime });
           }, 1500);
         }
 
@@ -121,7 +134,6 @@ export const handleSocketConnection = (io, socket) => {
     const room = activeRooms.get(roomId);
     if (!room) return socket.emit("room_error", { message: "Room expired or closed." });
 
-    // Find the disconnected player and assign the new socket.id to them
     const player = room.players.find(p => p.disconnected);
     if (player) {
       player.id = socket.id;
@@ -131,10 +143,10 @@ export const handleSocketConnection = (io, socket) => {
     socket.join(roomId);
     console.log(`🔄 Player reconnected to room ${roomId}`);
 
-    // If the match was already active, resend the problem data and immediately clear the countdown
     if (room.status === "active" && room.problem) {
       socket.emit("problem_data", room.problem);
-      socket.emit("start_countdown", { seconds: 0 }); // Instant GO!
+      // Give them the original start time so the frontend knows to skip the countdown
+      socket.emit("start_countdown", { startTime: room.startTime }); 
     }
   });
 
@@ -183,26 +195,28 @@ export const handleSocketConnection = (io, socket) => {
     }
   };
 
-  socket.on("leave_room", ({ roomId }) => {
-    handleLeave(roomId, socket.id);
-    socket.leave(roomId);
+  // 👉 FIXED: Defensive check prevents crashes on undefined payloads
+  socket.on("leave_room", (data) => {
+    if (!data || !data.roomId) return; 
+    
+    handleLeave(data.roomId, socket.id);
+    socket.leave(data.roomId);
   });
 
   socket.on("disconnect", () => {
     console.log(`🔴 Socket disconnected: ${socket.id}`);
     
-    // Instead of instantly destroying the room, give a 10-second grace period for refresh reconnects
     for (const [roomId, room] of activeRooms.entries()) {
       const player = room.players.find(p => p.id === socket.id);
       if (player) {
-        player.disconnected = true; // Mark as temporarily missing
+        player.disconnected = true; 
         
         setTimeout(() => {
           const checkRoom = activeRooms.get(roomId);
           if (checkRoom) {
             const checkPlayer = checkRoom.players.find(p => p.id === socket.id && p.disconnected);
             if (checkPlayer) {
-              handleLeave(roomId, socket.id); // Permanently boot them if they didn't rejoin
+              handleLeave(roomId, socket.id); 
             }
           }
         }, 10000); 

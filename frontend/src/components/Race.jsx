@@ -24,6 +24,11 @@ const Race = () => {
   const storedRoom = sessionStorage.getItem('coderace_active_room');
   const [roomId, setRoomId] = useState(location.state?.roomId || storedRoom || 'ERROR');
   
+  // --- PLAYER NAMES STATE ---
+  const myName = location.state?.playerName || 'Player';
+  // 👉 FIX 1: Correctly initialize opponentName from Lobby state!
+  const [opponentName, setOpponentName] = useState(location.state?.opponentName || 'Waiting...');
+
   const difficulty = (location.state?.difficulty || 'medium').toLowerCase();
   const initialCompany = location.state?.company || 'All';
   const isPractice = location.state?.isPractice || false;
@@ -48,12 +53,13 @@ const Race = () => {
   const [examples, setExamples] = useState([]);
   const [constraints, setConstraints] = useState([]);
   const [companiesList, setCompaniesList] = useState([]);
-  const [hints, setHints] = useState([]); // <-- ADDED HINTS STATE
+  const [hints, setHints] = useState([]); 
   const [snippetsCache, setSnippetsCache] = useState({});
 
   const [hasClickedReady, setHasClickedReady] = useState(false);
   const [raceStarted, setRaceStarted] = useState(false); 
   const [opponentProgress, setOpponentProgress] = useState(0);
+  const [matchConclusion, setMatchConclusion] = useState(null); 
 
   // --- Editor State ---
   const [language, setLanguage] = useState('cpp');
@@ -64,10 +70,8 @@ const Race = () => {
   // ==========================================
   const { leftWidth, bottomHeight, isDragging, setIsDragging } = useResizablePanels();
   
-  // Initialize timer
-  const { countdown, setCountdown, timeLeft, formatTime } = useRaceTimer(timeLimitMinutes, raceStarted);
+  const { countdown, setCountdown, timeLeft, formatTime, syncCountdown } = useRaceTimer(timeLimitMinutes, raceStarted);
   
-  // Initialize submission logic
   const { 
     isSubmitting, setIsSubmitting, 
     terminalLogs, setTerminalLogs, 
@@ -76,11 +80,9 @@ const Race = () => {
     handleRunCode 
   } = useSubmission(socket, roomId, problem, isPractice, raceStarted, timeLeft);
 
-  // Wrappers so we can pass current language and code into the hook
   const onSubmit = () => handleSubmitCode(language, code);
   const onRun = () => handleRunCode(language, code); 
 
-  // Time's up effect
   useEffect(() => {
     if (timeLeft === 0 && raceStarted) {
       setTerminalLogs(prev => [...prev, `🚨 TIME UP! Match concluded.`]);
@@ -116,12 +118,11 @@ const Race = () => {
   useEffect(() => {
     if (!isPractice || !socket || hasClickedReady) return;
 
-    // If we recovered a room from storage, we are reconnecting. Do not create a new one!
     if (roomId === storedRoom && roomId !== 'ERROR') return; 
 
     const handlePracticeRoomCreated = ({ roomId: newRoomId }) => {
       setRoomId(newRoomId); 
-      sessionStorage.setItem('coderace_active_room', newRoomId); // <-- Save immediately
+      sessionStorage.setItem('coderace_active_room', newRoomId); 
       socket.emit('toggle_ready', { roomId: newRoomId, isReady: true });
     };
 
@@ -129,17 +130,16 @@ const Race = () => {
 
     setHasClickedReady(true);
     socket.emit("create_room", { 
-      difficulty, company: initialCompany, matchType: 'practice', playerName: 'Solo Player' 
+      difficulty, company: initialCompany, matchType: 'practice', playerName: myName 
     });
 
     return () => socket.off('room_created', handlePracticeRoomCreated);
-  }, [isPractice, socket, hasClickedReady, difficulty, initialCompany, roomId, storedRoom]);
+  }, [isPractice, socket, hasClickedReady, difficulty, initialCompany, roomId, storedRoom, myName]);
 
   useEffect(() => {
     if (!socket) return;
     if (roomId === 'ERROR' && !isPractice) { navigate('/'); return; }
 
-    // --- RECONNECTION HANDSHAKE ---
     const activeRoomId = sessionStorage.getItem('coderace_active_room');
     if (activeRoomId && activeRoomId === roomId && !hasClickedReady) {
       socket.emit('rejoin_room', { roomId });
@@ -147,12 +147,14 @@ const Race = () => {
     } else if (roomId !== 'ERROR') {
       sessionStorage.setItem('coderace_active_room', roomId);
     }
-    // ------------------------------
+
+    // --- CAPTURE OPPONENT NAMES ---
+    socket.on('player_joined', ({ joinerName }) => setOpponentName(joinerName));
+    socket.on('room_joined', (data) => setOpponentName(data.creatorName));
 
     socket.on('problem_data', (data) => {
       setProblem(data);
       
-      // SAFELY PARSE AND FALLBACK TO [] IF DB RETURNS NULL
       setExamples(data.examples ? (typeof data.examples === 'string' ? JSON.parse(data.examples) : data.examples) : []);
       setConstraints(data.constraints ? (typeof data.constraints === 'string' ? JSON.parse(data.constraints) : data.constraints) : []);
       setHints(data.hints ? (typeof data.hints === 'string' ? JSON.parse(data.hints) : data.hints) : []);
@@ -175,30 +177,48 @@ const Race = () => {
       if (isPractice) setRaceStarted(true);
     });
 
-    socket.on('start_countdown', ({ seconds }) => {
-      // If server says 0 (reconnect), start instantly and skip the interval
-      if (seconds === 0) {
-        setCountdown(null);
-        setRaceStarted(true);
-        return;
-      }
-
-      setCountdown(seconds);
-      let count = seconds;
-      const int = setInterval(() => {
-        count -= 1;
-        if (count > 0) setCountdown(count);
-        else if (count === 0) setCountdown('GO!');
-        else { clearInterval(int); setCountdown(null); setRaceStarted(true); }
-      }, 1000);
+    socket.on('start_countdown', ({ startTime }) => {
+      syncCountdown(startTime, setRaceStarted);
     });
 
     socket.on('opponent_progress', ({ progress }) => setOpponentProgress(progress));
     
+    // --- UPDATED NAVIGATION: Passing Names AND Code for AI ---
     socket.on('match_over', ({ winnerId }) => {
-      // Clear session storage on clean match end so it doesn't try to reconnect to an old room later
-      sessionStorage.removeItem('coderace_active_room'); 
-      navigate('/result', { state: { didIWin: winnerId === socket.id, myProgress, opponentProgress } });
+      const didIWin = winnerId === socket.id;
+      
+      setMatchConclusion(didIWin ? "Victory!" : "Defeat!");
+      setTerminalLogs(prev => [...prev, didIWin ? `🏆 You won the match!` : `💀 Opponent finished first. Match over!`]);
+      
+      setTimeout(() => {
+        sessionStorage.removeItem('coderace_active_room'); 
+        // 👉 FIX 2: Added myCode and problemTitle for AI review
+        navigate('/result', { 
+          state: { 
+            didIWin, myProgress, opponentProgress, myName, opponentName,
+            myCode: code, problemTitle: problem?.title 
+          } 
+        });
+      }, 3000);
+    });
+
+    // --- UPDATED NAVIGATION: Passing Names AND Code for AI ---
+    socket.on('opponent_left_handshake', () => {
+      if (raceStarted && !isPractice) {
+        setMatchConclusion("Opponent Fled!");
+        setTerminalLogs(prev => [...prev, `🏆 Opponent fled the match! You win by default.`]);
+        
+        setTimeout(() => {
+          sessionStorage.removeItem('coderace_active_room');
+          // 👉 FIX 3: Added myCode and problemTitle for AI review
+          navigate('/result', { 
+            state: { 
+              didIWin: true, myProgress, opponentProgress: 'Fled', myName, opponentName,
+              myCode: code, problemTitle: problem?.title 
+            } 
+          });
+        }, 3000);
+      }
     });
 
     socket.on('room_error', (data) => {
@@ -206,10 +226,16 @@ const Race = () => {
     });
 
     return () => {
-      socket.off('problem_data'); socket.off('start_countdown');
-      socket.off('opponent_progress'); socket.off('match_over'); socket.off('room_error');
+      socket.off('player_joined');
+      socket.off('room_joined');
+      socket.off('problem_data'); 
+      socket.off('start_countdown');
+      socket.off('opponent_progress'); 
+      socket.off('match_over'); 
+      socket.off('opponent_left_handshake');
+      socket.off('room_error');
     };
-  }, [socket, roomId, isPractice, navigate, initialCompany, myProgress, opponentProgress, setCountdown, setTerminalLogs, hasClickedReady]);
+  }, [socket, roomId, isPractice, navigate, initialCompany, myProgress, opponentProgress, setCountdown, setTerminalLogs, hasClickedReady, raceStarted, syncCountdown, myName, opponentName, code, problem]); // <-- Make sure code and problem are in deps
 
   // ==========================================
   // 4. EDITOR ACTIONS
@@ -235,7 +261,7 @@ const Race = () => {
 
   const handleLeaveMatch = () => {
     if (socket) socket.emit('leave_room', { roomId });
-    sessionStorage.removeItem('coderace_active_room'); // Clean up on manual leave
+    sessionStorage.removeItem('coderace_active_room'); 
     navigate('/');
   };
 
@@ -259,6 +285,23 @@ const Race = () => {
       
       {isDragging && <div style={{ position: 'fixed', inset: 0, zIndex: 9999, cursor: isDragging === 'vertical' ? 'col-resize' : 'row-resize' }} />}
 
+      {/* 3-Second Match Conclusion Overlay */}
+      {matchConclusion && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(6px)' }}>
+          <div style={{ background: '#0a0a0a', border: `1px solid ${colors.border}`, padding: '40px 60px', borderRadius: '16px', textAlign: 'center', boxShadow: '0 20px 50px rgba(0,0,0,0.8)' }}>
+            <div style={{ fontSize: '64px', marginBottom: '16px' }}>
+              {matchConclusion === "Victory!" ? "🏆" : matchConclusion === "Defeat!" ? "💀" : "🏃💨"}
+            </div>
+            <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#fff', marginBottom: '12px' }}>
+              {matchConclusion}
+            </div>
+            <div style={{ color: colors.accent, fontSize: '14px', fontWeight: '600', letterSpacing: '1px', textTransform: 'uppercase' }}>
+              Navigating to results...
+            </div>
+          </div>
+        </div>
+      )}
+
       <ReadyOverlay 
         raceStarted={raceStarted} isPractice={isPractice} countdown={countdown}
         hasClickedReady={hasClickedReady} setHasClickedReady={setHasClickedReady}
@@ -279,7 +322,7 @@ const Race = () => {
         <ProblemPanel 
           leftWidth={leftWidth} problem={problem} difficulty={difficulty}
           companiesList={companiesList} examples={examples} constraints={constraints} 
-          hints={hints} /* <-- ADDED PROP */
+          hints={hints} 
           colors={colors}
         />
 

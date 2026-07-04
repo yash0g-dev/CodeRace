@@ -102,6 +102,7 @@ const generateBatchCppWrapper = (userClassCode, metadata, returnType, functionNa
 #include <map>
 #include <set>
 #include <cmath>
+#include <climits> 
 #include <algorithm>
 using namespace std;
 
@@ -234,6 +235,8 @@ const generateOopCppWrapper = (userClassCode, testSuiteCases) => {
 #include <unordered_map>
 #include <list>
 #include <stack>
+#include <climits>   
+#include <algorithm> 
 using namespace std;
 
 void printOutput(int val) { cout << val; }
