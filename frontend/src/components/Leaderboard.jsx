@@ -10,7 +10,7 @@ const Leaderboard = () => {
     const fetchLeaderboard = async () => {
       try {
         // Fetch the top 50 players from your new backend route!
-        const response = await fetch('http://localhost:5000/api/users/leaderboard');
+        const response = await fetch('https://coderace-5xw6.onrender.com/api/users/leaderboard');
         if (!response.ok) throw new Error('Failed to fetch leaderboard');
         
         const data = await response.json();

@@ -1,7 +1,7 @@
 import { io } from "socket.io-client";
 
-const player1 = io("http://localhost:5000");
-const player2 = io("http://localhost:5000");
+const player1 = io("https://coderace-5xw6.onrender.com");
+const player2 = io("https://coderace-5xw6.onrender.com");
 
 player1.on("connect", () => {
   player1.emit("create_room", { difficulty: "medium", matchType: "1v1" });

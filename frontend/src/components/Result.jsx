@@ -28,7 +28,7 @@ const Result = () => {
   useEffect(() => {
     const fetchReview = async () => {
       try {
-        const { data } = await axios.post('http://localhost:5000/api/ai/review', {
+        const { data } = await axios.post('https://coderace-5xw6.onrender.com/api/ai/review', {
           code: myCode,
           problemTitle: problemTitle,
           didIWin: didIWin // 👉 Now the AI knows the context of the match!

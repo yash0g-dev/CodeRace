@@ -15,7 +15,7 @@ export const useSubmission = (socket, roomId, problem, isPractice, raceStarted, 
     setTerminalLogs(['> Initializing execution container...', '> Running against sample test cases...']);
     
     try {
-      const { data } = await axios.post('http://localhost:5000/api/code/run', {
+      const { data } = await axios.post('https://coderace-5xw6.onrender.com/api/code/run', {
         language, code, problemId: problem?.id || 'two-sum'
       });
 
@@ -54,7 +54,7 @@ export const useSubmission = (socket, roomId, problem, isPractice, raceStarted, 
     setTerminalLogs(['> Initializing execution container...', '> Compiling source code...']);
     
     try {
-      const { data } = await axios.post('http://localhost:5000/api/code/execute', {
+      const { data } = await axios.post('https://coderace-5xw6.onrender.com/api/code/execute', {
         language, code, problemId: problem?.id || 'two-sum', roomId, userId: socket.id
       });
 
