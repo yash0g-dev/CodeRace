@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useSocket } from '../context/socketStore.js';
 
@@ -23,11 +23,9 @@ const Race = () => {
   // --- Routing & Match State ---
   const difficulty = (location.state?.difficulty || 'medium').toLowerCase();
   const initialCompany = location.state?.company || 'All';
-  // 👉 FIX 1: Moved isPractice up so it can block ghost rooms
   const isPractice = location.state?.isPractice || false;
   const matchType = location.state?.matchType || 'Rapid (30 min)';
 
-  // 👉 FIX 1 (Cont): If practice mode, NEVER load a stored room
   const storedRoom = isPractice ? null : sessionStorage.getItem('coderace_active_room');
   const [roomId, setRoomId] = useState(location.state?.roomId || storedRoom || 'ERROR');
   
@@ -58,6 +56,7 @@ const Race = () => {
   const [snippetsCache, setSnippetsCache] = useState({});
 
   const [hasClickedReady, setHasClickedReady] = useState(false);
+  const hasRequestedPractice = useRef(false); // 👉 NEW: Silent tracker prevents React unmount loop
   const [raceStarted, setRaceStarted] = useState(false); 
   const [opponentProgress, setOpponentProgress] = useState(0);
   const [matchConclusion, setMatchConclusion] = useState(null); 
@@ -114,40 +113,45 @@ const Race = () => {
   };
 
   // ==========================================
-  // 3. SOCKET LISTENERS
+  // 3. SOCKET LISTENERS (PRACTICE CREATION)
   // ==========================================
   useEffect(() => {
-    if (!isPractice || !socket || hasClickedReady) return;
-
-    if (roomId === storedRoom && roomId !== 'ERROR') return; 
+    if (!isPractice || !socket) return;
 
     const handlePracticeRoomCreated = ({ roomId: newRoomId }) => {
       setRoomId(newRoomId); 
       sessionStorage.setItem('coderace_active_room', newRoomId); 
       
-      // 👉 The 500ms timeout prevents the React race condition
+      // 500ms delay ensures React is ready to listen
       setTimeout(() => {
+        console.log("FRONTEND: Emitting toggle_ready for practice room", newRoomId);
         socket.emit('toggle_ready', { roomId: newRoomId, isReady: true });
       }, 500);
     };
 
     socket.on('room_created', handlePracticeRoomCreated);
 
-    setHasClickedReady(true);
-    socket.emit("create_room", { 
-      difficulty, company: initialCompany, matchType: 'practice', playerName: myName 
-    });
+    // Only ask the server to create a room ONCE, silently, without re-rendering
+    if (!hasRequestedPractice.current) {
+      hasRequestedPractice.current = true;
+      socket.emit("create_room", { 
+        difficulty, company: initialCompany, matchType: 'practice', playerName: myName 
+      });
+    }
 
     return () => socket.off('room_created', handlePracticeRoomCreated);
-  }, [isPractice, socket, hasClickedReady, difficulty, initialCompany, roomId, storedRoom, myName]);
+  }, [isPractice, socket, difficulty, initialCompany, myName]); 
 
+  // ==========================================
+  // 4. GENERAL MATCH LISTENERS
+  // ==========================================
   useEffect(() => {
     if (!socket) return;
     if (roomId === 'ERROR' && !isPractice) { navigate('/'); return; }
 
     const activeRoomId = sessionStorage.getItem('coderace_active_room');
     
-    // 👉 FIX 2: Never attempt to "rejoin" a room if we are in Practice Mode!
+    // Never attempt to "rejoin" a room if we are in Practice Mode
     if (!isPractice && activeRoomId && activeRoomId === roomId && !hasClickedReady) {
       socket.emit('rejoin_room', { roomId });
       setHasClickedReady(true);
@@ -155,7 +159,6 @@ const Race = () => {
       sessionStorage.setItem('coderace_active_room', roomId);
     }
 
-    // --- CAPTURE OPPONENT NAMES ---
     socket.on('player_joined', ({ joinerName }) => setOpponentName(joinerName));
     socket.on('room_joined', (data) => setOpponentName(data.creatorName));
 
@@ -190,7 +193,6 @@ const Race = () => {
 
     socket.on('opponent_progress', ({ progress }) => setOpponentProgress(progress));
     
-    // --- UPDATED NAVIGATION: Passing Names AND Code for AI ---
     socket.on('match_over', ({ winnerId }) => {
       const didIWin = winnerId === socket.id;
       
@@ -200,15 +202,11 @@ const Race = () => {
       setTimeout(() => {
         sessionStorage.removeItem('coderace_active_room'); 
         navigate('/result', { 
-          state: { 
-            didIWin, myProgress, opponentProgress, myName, opponentName,
-            myCode: code, problemTitle: problem?.title 
-          } 
+          state: { didIWin, myProgress, opponentProgress, myName, opponentName, myCode: code, problemTitle: problem?.title } 
         });
       }, 3000);
     });
 
-    // --- UPDATED NAVIGATION: Passing Names AND Code for AI ---
     socket.on('opponent_left_handshake', () => {
       if (raceStarted && !isPractice) {
         setMatchConclusion("Opponent Fled!");
@@ -217,10 +215,7 @@ const Race = () => {
         setTimeout(() => {
           sessionStorage.removeItem('coderace_active_room');
           navigate('/result', { 
-            state: { 
-              didIWin: true, myProgress, opponentProgress: 'Fled', myName, opponentName,
-              myCode: code, problemTitle: problem?.title 
-            } 
+            state: { didIWin: true, myProgress, opponentProgress: 'Fled', myName, opponentName, myCode: code, problemTitle: problem?.title } 
           });
         }, 3000);
       }
@@ -243,7 +238,7 @@ const Race = () => {
   }, [socket, roomId, isPractice, navigate, initialCompany, myProgress, opponentProgress, setCountdown, setTerminalLogs, hasClickedReady, raceStarted, syncCountdown, myName, opponentName, code, problem]); 
 
   // ==========================================
-  // 4. EDITOR ACTIONS
+  // 5. EDITOR ACTIONS
   // ==========================================
   const handleLanguageSelect = (newLang) => {
     setLanguage(newLang);
@@ -271,7 +266,7 @@ const Race = () => {
   };
 
   // ==========================================
-  // 5. THEME & COLORS 
+  // 6. THEME & COLORS 
   // ==========================================
   const colors = {
     bgApp: '#000000', bgPanel: '#0a0a0a', bgHeader: '#121212',
