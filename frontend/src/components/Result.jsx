@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import axios from 'axios'; // 👉 Make sure you ran 'npm install axios' in your frontend!
+import axios from 'axios'; 
 import { useSocket } from '../context/socketStore.js';
 
 // --- Extracted Components ---
@@ -17,26 +17,31 @@ const Result = () => {
     didIWin = false, 
     myName = 'You',
     opponentName = 'Opponent',
-    myCode = '', // 👉 Catching your submitted code
+    myCode = '', 
     problemTitle = 'a coding challenge' 
   } = location.state || {};
 
   // 2. Dynamic state ready for your backend OpenAI response
   const [aiFeedback, setAiFeedback] = useState("Waiting for AI analysis...");
 
-  // 👉 INSIDE Result.jsx
   useEffect(() => {
     const fetchReview = async () => {
       try {
         const { data } = await axios.post('https://coderace-5xw6.onrender.com/api/ai/review', {
           code: myCode,
           problemTitle: problemTitle,
-          didIWin: didIWin // 👉 Now the AI knows the context of the match!
+          didIWin: didIWin
         });
         setAiFeedback(data.review);
       } catch (error) {
         console.error("AI Fetch Error:", error);
-        setAiFeedback("AI Analysis unavailable. Ensure your backend is running and API keys are valid.");
+        
+        // 👉 Graceful AI Error Handling
+        if (error.response && error.response.data && error.response.data.error) {
+          setAiFeedback(`⚠️ ${error.response.data.error}`);
+        } else {
+          setAiFeedback("🏎️ Pit stop! The AI engines are running too hot. Try your request again in 60 seconds. ");
+        }
       }
     };
 
@@ -46,7 +51,7 @@ const Result = () => {
     } else {
       setAiFeedback("No code submitted to analyze.");
     }
-  }, [myCode, problemTitle]);
+  }, [myCode, problemTitle, didIWin]);
 
   // 4. Single action: Clean up the socket, then immediately go queue up again
   const handleNewRace = () => {
@@ -61,7 +66,7 @@ const Result = () => {
       <div style={{ width: '100%', maxWidth: '480px' }}>
         
         {/* Shows who won based on the names */}
-        <MatchStats didIWin={didIWin} opponentName={opponentName} />
+        <MatchStats didIWin={didIWin} opponentName={opponentName} myName={myName} />
 
         <div style={{ height: '1px', background: '#1e1e1e', margin: '24px 0', width: '100%' }}></div>
 

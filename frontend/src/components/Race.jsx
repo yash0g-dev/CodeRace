@@ -26,7 +26,6 @@ const Race = () => {
   
   // --- PLAYER NAMES STATE ---
   const myName = location.state?.playerName || 'Player';
-  // 👉 FIX 1: Correctly initialize opponentName from Lobby state!
   const [opponentName, setOpponentName] = useState(location.state?.opponentName || 'Waiting...');
 
   const difficulty = (location.state?.difficulty || 'medium').toLowerCase();
@@ -123,6 +122,7 @@ const Race = () => {
     const handlePracticeRoomCreated = ({ roomId: newRoomId }) => {
       setRoomId(newRoomId); 
       sessionStorage.setItem('coderace_active_room', newRoomId); 
+      // 👉 Auto-Ready for Practice Mode
       socket.emit('toggle_ready', { roomId: newRoomId, isReady: true });
     };
 
@@ -192,11 +192,10 @@ const Race = () => {
       
       setTimeout(() => {
         sessionStorage.removeItem('coderace_active_room'); 
-        // 👉 FIX 2: Added myCode and problemTitle for AI review
         navigate('/result', { 
           state: { 
             didIWin, myProgress, opponentProgress, myName, opponentName,
-            myCode: code, problemTitle: problem?.title 
+            myCode: code, problemTitle: problem?.title // 👉 Passing Code to Result
           } 
         });
       }, 3000);
@@ -210,11 +209,10 @@ const Race = () => {
         
         setTimeout(() => {
           sessionStorage.removeItem('coderace_active_room');
-          // 👉 FIX 3: Added myCode and problemTitle for AI review
           navigate('/result', { 
             state: { 
               didIWin: true, myProgress, opponentProgress: 'Fled', myName, opponentName,
-              myCode: code, problemTitle: problem?.title 
+              myCode: code, problemTitle: problem?.title // 👉 Passing Code to Result
             } 
           });
         }, 3000);
@@ -235,7 +233,7 @@ const Race = () => {
       socket.off('opponent_left_handshake');
       socket.off('room_error');
     };
-  }, [socket, roomId, isPractice, navigate, initialCompany, myProgress, opponentProgress, setCountdown, setTerminalLogs, hasClickedReady, raceStarted, syncCountdown, myName, opponentName, code, problem]); // <-- Make sure code and problem are in deps
+  }, [socket, roomId, isPractice, navigate, initialCompany, myProgress, opponentProgress, setCountdown, setTerminalLogs, hasClickedReady, raceStarted, syncCountdown, myName, opponentName, code, problem]);
 
   // ==========================================
   // 4. EDITOR ACTIONS
