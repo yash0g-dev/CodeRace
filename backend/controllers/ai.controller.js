@@ -38,7 +38,7 @@ export const getCodeReview = asyncHandler(async (req, res) => {
   `;
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-flash-lite-latest" });
     
     const result = await model.generateContent(prompt);
     const review = result.response.text();
