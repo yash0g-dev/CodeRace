@@ -4,9 +4,11 @@ import { useSocket } from "../context/socketStore.js";
 import LobbyForm from "./lobby/LobbyForm.jsx";
 import WaitingRoom from "./lobby/WaitingRoom.jsx";
 import { useUserStore } from "../store/useUserStore.js";
+import  useMatchStore from "../store/useMatchStore.js";
 
 const Lobby = () => {
   const navigate = useNavigate();
+  const setGameConfig = useMatchStore((state) => state.setGameConfig);
   const location = useLocation();
   const { socket } = useSocket();
   const isPracticeMode = location.pathname.includes("practice");
@@ -104,18 +106,17 @@ const Lobby = () => {
       const timeLimit = extractTimeLimit(matchType);
 
       // 👉 UPDATED: Now safely passes BOTH live names using Refs
-      navigate("/race", {
-        state: {
-          roomId,
-          difficulty,
-          company,
-          matchType,
-          timeLimit,
-          isPractice: false,
-          playerName: playerNameRef.current.trim(),
-          opponentName: opponentNameRef.current,
-        },
-      });
+      setGameConfig({
+      roomId,
+      difficulty,
+      company,
+      matchType,
+      timeLimit,
+      isPractice: false,
+      playerName: playerNameRef.current.trim(), // Or get it from the store!
+      opponentName: opponentNameRef.current,
+    });
+      navigate("/race");
     };
 
     const handleRoomError = ({ message }) => {
@@ -191,17 +192,17 @@ const Lobby = () => {
     setLobbyError("");
     const finalMatchType = getFinalMatchType();
     const timeLimit = extractTimeLimit(finalMatchType);
-
-    navigate("/race", {
-      state: {
-        difficulty,
-        company,
-        matchType: finalMatchType,
-        timeLimit,
-        isPractice: true,
-        playerName: playerName.trim(),
-      },
+setGameConfig({
+      roomId: 'practice', // or null
+      difficulty,
+      company,
+      matchType: finalMatchType,
+      timeLimit,
+      isPractice: true,
+      playerName: playerName.trim(),
+      opponentName: 'AI', // or null
     });
+    navigate("/race");
   };
 
   const handleCreateRoom = () => {

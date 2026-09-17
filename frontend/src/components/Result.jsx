@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useSocket } from '../context/socketStore.js';
+import useMatchStore from '../store/useMatchStore.js'; // 👉 NEW: Import your store
 
 import MatchStats from './result/MatchStats.jsx';
 import AIReview from './result/AIReview.jsx';
@@ -9,30 +10,40 @@ import AIReview from './result/AIReview.jsx';
 const LANG_LABEL = { cpp: 'C++', python: 'Python', java: 'Java', javascript: 'JavaScript' };
 
 const Result = () => {
-  const navigate  = useNavigate();
-  const location  = useLocation();
+  const navigate = useNavigate();
   const { socket } = useSocket();
 
+  // 👉 NEW: Pull all game state directly from Zustand instead of location.state
   const {
-    didIWin       = false,
-    myName        = 'You',
-    opponentName  = 'Opponent',
-    myCode        = '',
-    problemTitle  = 'a coding challenge',
-    difficulty    = 'medium',
-    matchType     = '',
-    isPractice    = false,
-    winnerCode    = '',
-    winnerLanguage = 'cpp',
-  } = location.state || {};
+    didIWin,
+    myName,
+    opponentName,
+    myCode,
+    problemTitle,
+    difficulty,
+    matchType,
+    isPractice,
+    winnerCode,
+    winnerLanguage,
+    clearMatch, // Assuming you added a clear function to reset the store
+  } = useMatchStore();
 
-  const [aiFeedback, setAiFeedback]   = useState('Waiting for AI analysis...');
+
+  const [aiFeedback, setAiFeedback] = useState('Waiting for AI analysis...');
   const [showSolution, setShowSolution] = useState(false);
+
+  // 👉 NEW: Safeguard - If they manually type /result in the URL with no game data, send them home
+  useEffect(() => {
+    if (!myCode && !isPractice) {
+      navigate('/');
+    }
+  }, [myCode, isPractice, navigate]);
 
   useEffect(() => {
     const fetchReview = async () => {
       try {
         const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://coderace-backend.onrender.com";
+
         const { data } = await axios.post(`${backendUrl}/api/ai/review`, {
           code: myCode,
           problemTitle,
@@ -56,20 +67,23 @@ const Result = () => {
   }, [myCode, problemTitle, didIWin]);
 
   const handleNewRace = () => {
+    if (clearMatch) clearMatch(); // 👉 NEW: Wipe store before leaving
     if (socket) socket.emit('leave_room');
     navigate('/');
   };
 
-  // Feature 4: Rematch — go back to lobby with same settings pre-filled
   const handleRematch = () => {
+    if (clearMatch) clearMatch(); // 👉 NEW: Wipe store before leaving
     if (socket) socket.emit('leave_room');
+    
+    // We can safely keep `state` here because it is just pre-filling the Lobby form UI
     navigate('/lobby', {
       state: { prefillDifficulty: difficulty, prefillMatchType: matchType },
     });
   };
 
   const hasWinnerCode = winnerCode && winnerCode.trim().length > 0;
-  const winnerName    = didIWin ? myName : opponentName;
+  const winnerName = didIWin ? myName : opponentName;
 
   return (
     <div className="flex items-start justify-center min-h-[calc(100vh-60px)] px-4 py-8 pb-12 bg-black">

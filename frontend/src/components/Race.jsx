@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useSocket } from "../context/socketStore.js";
 import { saveRaceResult } from "../services/resultService.js";
 import { useUserStore } from "../store/useUserStore.js";
+import useMatchStore from "../store/useMatchStore.js";
 
 // --- Extracted Hooks ---
 import { useResizablePanels } from "../hooks/race/useResizablePanels.js";
@@ -20,34 +21,38 @@ import ConsolePanel from "./race/ConsolePanel.jsx";
 
 const Race = () => {
   const { socket } = useSocket();
-  const location = useLocation();
   const navigate = useNavigate();
   const [ping, setPing] = useState(0);
+// 👉 NEW: Pull config and actions directly from Zustand
+  const {
+    difficulty: storeDifficulty = "medium",
+    company: initialCompany = "All",
+    isPractice = false,
+    matchType = "Rapid (30 min)",
+    roomId: storeRoomId,
+    playerName: storePlayerName,
+    opponentName: storeOpponentName,
+    timeLimit: storeTimeLimit,
+    setMatchResult // We will use this when the game ends
+  } = useMatchStore();
 
   // --- Routing & Match State ---
-  const difficulty = (location.state?.difficulty || "medium").toLowerCase();
-  const initialCompany = location.state?.company || "All";
-  const isPractice = location.state?.isPractice || false;
-  const matchType = location.state?.matchType || "Rapid (30 min)";
+  const difficulty = storeDifficulty.toLowerCase();
   const { user, profile } = useUserStore();
   const typingStats = useRef({ total: 0, bakspaces: 0 });
 
   const storedRoom = isPractice
     ? null
     : sessionStorage.getItem("coderace_active_room");
-  const [roomId, setRoomId] = useState(
-    location.state?.roomId || storedRoom || "ERROR",
-  );
 
-  // --- PLAYER NAMES STATE ---
-  const myName =
-    profile?.username || location.state?.playerName || user?.email || "Player";
-  const [opponentName, setOpponentName] = useState(
-    location.state?.opponentName || "Waiting...",
-  );
+const [roomId, setRoomId] = useState(storeRoomId || storedRoom || "ERROR");
+
+// --- PLAYER NAMES STATE ---
+  const myName = profile?.username || storePlayerName || user?.email || "Player";
+  const [opponentName, setOpponentName] = useState(storeOpponentName || "Waiting...");
 
   // --- Timer Fallback Logic ---
-  const getTimeLimit = (type) => {
+const getTimeLimit = (type) => {
     if (!type) return 30;
     if (type.includes("Zen")) return -1;
     if (type.startsWith("Bullet")) return 5;
@@ -59,7 +64,7 @@ const Race = () => {
     }
     return 30;
   };
-  const timeLimitMinutes = location.state?.timeLimit || getTimeLimit(matchType);
+const timeLimitMinutes = storeTimeLimit || getTimeLimit(matchType);
 
   const [problem, setProblem] = useState(null);
   const [examples, setExamples] = useState([]);
@@ -77,6 +82,14 @@ const Race = () => {
   // --- Editor State ---
   const [language, setLanguage] = useState("cpp");
   const [code, setCode] = useState("// Waiting for problem...");
+
+  // 👉 NEW: Create refs to hold the live values
+  const codeRef = useRef(code);
+  const languageRef = useRef(language);
+
+  // 👉 NEW: Keep the refs updated on every keystroke
+  useEffect(() => { codeRef.current = code; }, [code]);
+  useEffect(() => { languageRef.current = language; }, [language]);
 
   // ==========================================
   // 1. CUSTOM HOOKS
@@ -311,7 +324,7 @@ const Race = () => {
         console.error("Failed to persist result:", err);
       }
 
-      setMatchConclusion(didIWin ? "Victory!" : "Defeat!");
+setMatchConclusion(didIWin ? "Victory!" : "Defeat!");
       setTerminalLogs((prev) => [
         ...prev,
         didIWin
@@ -319,29 +332,29 @@ const Race = () => {
           : `💀 Opponent finished first. Match over!`,
       ]);
 
-      setTimeout(() => {
+setTimeout(() => {
         sessionStorage.removeItem("coderace_active_room");
-        navigate("/result", {
-          state: {
-            didIWin,
-            myProgress,
-            opponentProgress,
-            myName,
-            opponentName,
-            myCode: code,
-            problemTitle: problem?.title,
-            difficulty,
-            matchType,
-            isPractice,
-            // Feature 2: winner's code visible to both players on result page
-            winnerCode:     winnerCode     || (didIWin ? code : ""),
-            winnerLanguage: winnerLanguage || "cpp",
-          },
+        
+        // 👉 NEW: Save to Zustand instead of URL state
+        setMatchResult({
+          didIWin,
+          myProgress, // Optional: ensure your Zustand store expects these if you use them in Result
+          opponentProgress,
+          myName,
+          opponentName,
+          myCode: codeRef.current,
+          problemTitle: problem?.title,
+          difficulty,
+          matchType,
+          isPractice,
+          winnerCode: winnerCode || (didIWin ? codeRef.current : ""),
+          winnerLanguage: winnerLanguage || languageRef.current,
         });
+navigate("/result"); // 👉 NEW: Clean navigation!
       }, 3000);
     });
 
-    socket.on("opponent_left_handshake", () => {
+socket.on("opponent_left_handshake", () => {
       if (raceStarted && !isPractice) {
         setMatchConclusion("Opponent Fled!");
         setTerminalLogs((prev) => [
@@ -351,17 +364,24 @@ const Race = () => {
 
         setTimeout(() => {
           sessionStorage.removeItem("coderace_active_room");
-          navigate("/result", {
-            state: {
-              didIWin: true,
-              myProgress,
-              opponentProgress: "Fled",
-              myName,
-              opponentName,
-              myCode: code,
-              problemTitle: problem?.title,
-            },
+          
+          // 👉 NEW: Save to Zustand
+          setMatchResult({
+            didIWin: true,
+            myProgress,
+            opponentProgress: "Fled",
+            myName,
+            opponentName,
+            myCode: codeRef.current,
+            problemTitle: problem?.title,
+            difficulty,
+            matchType,
+            isPractice,
+            winnerCode: codeRef.current,
+            winnerLanguage: languageRef.current,
           });
+
+          navigate("/result"); // 👉 NEW: Clean navigation!
         }, 3000);
       }
     });
